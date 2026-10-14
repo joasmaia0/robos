@@ -1,23 +1,26 @@
-//+--------------------------------==================================+
-//|                                   Ancora_Timeframe_Generico.mq5  |
+//+------------------------------------------------------------------+
+//|                                                   v700.mq5       |
 //|                                           Engenheiro Chefe QG    |
-//+--------------------------------==================================+
+//+------------------------------------------------------------------+
 #property copyright "Engenheiro Chefe QG - 2026"
-#property version   "19.00"
+#property version   "700.00"
 #property strict
 
 #include <Trade\Trade.mqh>
 CTrade trade;
 
 //====================================================================
-// 🎰 PAINEL CONFIGURÁVEL PURISTA (TEMPO GRÁFICO AUTOMÁTICO E GENÉRICO)
+// 🎰 PAINEL CONFIGURÁVEL (COMPRA EM TODO CANDLE COM SL E TP FIXOS)
 //====================================================================
-input double InpLotSize = 0.01; // O CANHÃO DO CHEFE: Lote de Partida Real
+input group      "--- PARÂMETROS DE CAPITAL ---"
+input double InpLotSize   = 0.02; // Lote de Partida Real (ProCent de 2.361 centavos)
 
-//--- Variáveis globais ocultas de controle rígido na RAM
+input group      "--- MATEMÁTICA ALVO (EM PONTOS) ---"
+input int    InpTakeProfit = 600;  // Alvo de Lucro (Take Profit) em Pontos
+input int    InpStopLoss   = 200;  // Limite de Perda (Stop Loss) em Pontos
+
+ulong    magic_number = 20261012;
 datetime hora_da_vela_atual = 0;
-ulong    magic_number = 20260909;
-int      compra = 0; // A sua gaveta de trava biométrica contra duplicação!
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -25,7 +28,8 @@ int      compra = 0; // A sua gaveta de trava biométrica contra duplicação!
 int OnInit()
   {
    trade.SetExpertMagicNumber(magic_number);
-   Print("🔌 [QG-MQL5] Usina Genérica Ativada! Operando no tempo gráfico atual do monitor!");
+   hora_da_vela_atual = 0;
+   Print("🔌 [QG-MQL5] Sniper V700 Ativado! Entrada exaustiva em todo candle com TP 300 e SL 100!");
    return(INIT_SUCCEEDED);
   }
 
@@ -34,51 +38,33 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnTick()
   { 
-   // 🌟 CONSERTO GENÉRICO: Troca da trava fixa pelo DNA do tempo do gráfico ativo (PERIOD_CURRENT)
-   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   double maxima_anterior = iHigh(_Symbol, PERIOD_CURRENT, 1);
+   // DNA do tempo do candle vivo atual (Barra 0)
+   datetime tempo_vela_viva = iTime(_Symbol, PERIOD_CURRENT, 0);
 
    //====================================================================
-   // 🪓 ETAPA 1: O RELÓGIO APITOU? VELA VIRADA? GUILHOTINA A MERCADO NO ATO!
+   // 🪓 ETAPA 1: O RELÓGIO APITOU? NOVO CANDLE NASCEU?
    //====================================================================
-   // Se o tempo da vela mudou e existe uma ordem aberta de antes, passa a faca!
-   if(hora_da_vela_atual != iTime(_Symbol, PERIOD_CURRENT, 0))
+   if(tempo_vela_viva != hora_da_vela_atual)
      {
-      for(int i=PositionsTotal()-1; i>=0; i--)
+      // Preço de compra Ask vivo vindo direto do satélite de Londres
+      double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      
+      // CÁLCULO CIRÚRGICO DA BLINDAGEM DA BOLETA
+      double preco_tp = ask + (InpTakeProfit * _Point);
+      double preco_sl = ask - (InpStopLoss * _Point);
+      
+      Print("📡 [SNIPER BUY EXAUSTIVO] Novo candle detectado! Disparando COMPRA a mercado!");
+      Print("📐 Configuração de Alvos -> Preço: ", ask, " | SL: ", preco_sl, " | TP: ", preco_tp);
+      
+      // Executa o soco seco de compra injetando SL e TP direto na carcaça da ordem
+      if(trade.Buy(InpLotSize, _Symbol, ask, preco_sl, preco_tp, "Exaustivo V700"))
         {
-         if(PositionGetSymbol(i) == _Symbol && PositionGetInteger(POSITION_MAGIC) == magic_number)
-           {
-            Print("🪓 [CRONÔMETRO] Bloco de tempo encerrado! Liquidando Posição a Mercado!");
-            hora_da_vela_atual = iTime(_Symbol, PERIOD_CURRENT, 0);
-            trade.PositionClose(PositionGetTicket(i));
-            compra = 0; // Reseta a trava para o próximo candle
-           }
+         // 🔒 Passa o cadeado biométrico para proibir novos tiros nesta mesma barra
+         hora_da_vela_atual = tempo_vela_viva;
         }
      }
 
-   //====================================================================
-   // 🟢 ETAPA 2: O BLOQUEIO DE SEGURANÇA MÁXIMA (ANTI-DUPLICAÇÃO)
-   //====================================================================
-   if(hora_da_vela_atual != iTime(_Symbol, PERIOD_CURRENT, 0))
-     {
-      hora_da_vela_atual = iTime(_Symbol, PERIOD_CURRENT, 0);
-      compra = 0;
-     }
- 
-   // 🎯 O SEU GATILHO PURISTA: Bid estourou a máxima anterior do gráfico e a trava tá livre (compra == 0)!
-   if((iHigh(_Symbol, PERIOD_CURRENT, 0) > maxima_anterior) && (compra == 0))
-     {
-       Print("🔴 [ESTOURO CONFIRMADO] Preço Bid ultrapassou a Máxima do gráfico (", maxima_anterior, ")!");
-       Print("📡 Disparando o TIRO ÚNICO do cesto. Lote cravado: ", InpLotSize);
-         
-       // Dispara o tiro seco de Venda (Sell) para faturar no pavio de exaustão da vela atual
-       if(trade.Sell(InpLotSize, _Symbol, bid, 0, 0, "Estouro Close"))
-         {
-          // 🔒 O CADENADO INDESTRUTÍVEL: Trava a fiação mudando o status para 1!
-          compra = 1;
-          Print("🔒 [TRAVA DE SEGURANÇA ATIVADA] Cartucho gasto! Cesto trancado até a vira do bloco.");
-         }
-     }
+   // Exibição do status no teto do gráfico para auditoria em tempo real
+   Comment("🟢 [SNIPER EXAUSTIVO V700]\nLote cravado: ", InpLotSize, "\nTake Profit Fixo: ", InpTakeProfit, " pontos\nStop Loss Fixo: ", InpStopLoss, " pontos\nÚltimo Candle Processado: ", TimeToString(hora_da_vela_atual));
   }
-  
   
