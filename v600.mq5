@@ -1,3 +1,4 @@
+
 //+------------------------------------------------------------------+
 //|                                                   v700.mq5       |
 //|                                           Engenheiro Chefe QG    |
@@ -46,6 +47,7 @@ void OnTick()
    //====================================================================
    if(tempo_vela_viva != hora_da_vela_atual)
      {
+      hora_da_vela_atual = tempo_vela_viva;
       // Preço de compra Ask vivo vindo direto do satélite de Londres
       double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
       
@@ -60,11 +62,10 @@ void OnTick()
       if(trade.Buy(InpLotSize, _Symbol, ask, preco_sl, preco_tp, "Exaustivo V700"))
         {
          // 🔒 Passa o cadeado biométrico para proibir novos tiros nesta mesma barra
-         hora_da_vela_atual = tempo_vela_viva;
+         //hora_da_vela_atual = tempo_vela_viva;
         }
      }
 
    // Exibição do status no teto do gráfico para auditoria em tempo real
    Comment("🟢 [SNIPER EXAUSTIVO V700]\nLote cravado: ", InpLotSize, "\nTake Profit Fixo: ", InpTakeProfit, " pontos\nStop Loss Fixo: ", InpStopLoss, " pontos\nÚltimo Candle Processado: ", TimeToString(hora_da_vela_atual));
   }
-  
