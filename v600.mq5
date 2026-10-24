@@ -1,16 +1,16 @@
 //+------------------------------------------------------------------+
-//|                               Sniper_Velas_Internas_Alpha.mq5     |
+//|                               Sniper_Velas_Internas_V2.mq5        |
 //|                                           Engenheiro Chefe QG    |
 //+------------------------------------------------------------------+
 #property copyright "Engenheiro Chefe QG - 2026"
-#property version   "800.00"
+#property version   "900.00"
 #property strict
 
 #include <Trade\Trade.mqh>
 CTrade trade;
 
 //====================================================================
-// 🎰 PAINEL CONFIGURÁVEL NOMAD DIGITAL (ROMPE VELAS INTERNAS)
+// 🎰 PAINEL CONFIGURÁVEL NOMAD DIGITAL (EMPILHAMENTO DESBLOQUEADO)
 //====================================================================
 input group      "--- PARÂMETROS DO COFRE ---"
 input double     InpLotSize            = 0.02;       // Lote padrão de cada tiro micro
@@ -28,7 +28,7 @@ int OnInit()
 
 void OnTick()
   {
-   // ⏳ TRAVA DO RELÓGIO: PEGA O TEMPO E A FIAÇÃO DO GRÁFICO ATUAL (EX: H1 ONDE O ROBÔ ESTÁ)
+   // ⏳ TRAVA DO RELÓGIO: PEGA O TEMPO DO GRÁFICO ATUAL (EX: H1 ONDE O ROBÔ ESTÁ)
    datetime hora_vela_atual = iTime(_Symbol, PERIOD_CURRENT, 0);
    
    // 📡 BUSCA A MÁXIMA E MÍNIMA DA VELA INTERNA ANTERIOR (BARRA 1 DO TIMEFRAME ATUAL)
@@ -53,7 +53,7 @@ void OnTick()
         }
      }
      
-   // SE O EXTRATO BATER 10 DÓLARES: FECHAMENTO HIDRÁULICO IMEDIATO!
+   // SE O EXTRATO ACUMULADO BATER 10 DÓLARES: FECHAMENTO HIDRÁULICO IMEDIATO!
    if(total_ordens_ativas > 0 && lucro_total_ciclo >= InpTargetProfitUSD)
      {
       for(int i=PositionsTotal()-1; i>=0; i--)
@@ -70,35 +70,24 @@ void OnTick()
      }
 
    //====================================================================
-   // 🎛️ ETAPA 2: GATILHOS SNIPER (UMA OPERAÇÃO POR VELINHA INTERNA)
+   // 🎛️ ETAPA 2: GATILHOS SNIPER (SÓ MIRA O RELÓGIO DO CANDLE ATUAL)
    //====================================================================
+   // 🔥 CORREÇÃO ULTRA: Removeu o bloqueio da gaveta cheia! Agora só checa o tempo da barra!
    if(barra_viva != hora_vela_atual)
      {
-      // Varredura de segurança para travar o clique duplo na mesma barra
-      int ordens_no_tique = 0;
-      for(int i=PositionsTotal()-1; i>=0; i--)
+      // 🟢 TIRO BUY: O preço Ask atual estourou a MÁXIMA da velinha anterior!
+      if(ask >= maxima_anterior_interna)
         {
-         if(PositionGetSymbol(i) == _Symbol && PositionGetInteger(POSITION_MAGIC) == magic)
-            ordens_no_tique++;
+         Print("🚀 [SNIPER BUY] Rompeu a máxima anterior interna (", maxima_anterior_interna, "). Abrindo boleta!");
+         trade.Buy(InpLotSize, _Symbol, ask, 0, 0, "Rompimento Interno Buy");
+         barra_viva = hora_vela_atual; // Fecha o cadeado estritamente para este candle atual
         }
-        
-      // Se a gaveta tá limpa, liga o radar geométrico
-      if(ordens_no_tique == 0)
+      // 🔴 TIRO SELL: O preço Bid atual rasgou a MÍNIMA da velinha anterior!
+      else if(bid <= minima_anterior_interna)
         {
-         // 🟢 TIRO BUY: O preço Ask atual estourou a MÁXIMA da velinha anterior!
-         if(ask >= maxima_anterior_interna)
-           {
-            Print("🚀 [SNIPER BUY] Rompeu a máxima anterior interna (", maxima_anterior_interna, "). Abrindo boleta!");
-            trade.Buy(InpLotSize, _Symbol, ask, 0, 0, "Rompimento Interno Buy");
-            barra_viva = hora_vela_atual; // Fecha o cadeado da barra atual
-           }
-         // 🔴 TIRO SELL: O preço Bid atual rasgou a MÍNIMA da velinha anterior!
-         else if(bid <= minima_anterior_interna)
-           {
-            Print("📉 [SNIPER SELL] Rompeu a mínima anterior interna (", minima_anterior_interna, "). Abrindo boleta!");
-            trade.Sell(InpLotSize, _Symbol, bid, 0, 0, "Rompimento Interno Sell");
-            barra_viva = hora_vela_atual; // Fecha o cadeado da barra atual
-           }
+         Print("📉 [SNIPER SELL] Rompeu a mínima anterior interna (", minima_anterior_interna, "). Abrindo boleta!");
+         trade.Sell(InpLotSize, _Symbol, bid, 0, 0, "Rompimento Interno Sell");
+         barra_viva = hora_vela_atual; // Fecha o cadeado estritamente para este candle atual
         }
      }
   }
