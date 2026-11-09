@@ -1,26 +1,37 @@
 //+------------------------------------------------------------------+
-//|                         Sniper_Velas_Internas_Sincro_H6.mq5       |
+//|                             Sniper_Velas_Internas_Blindado.mq5   |
 //|                                           Engenheiro Chefe QG    |
 //+------------------------------------------------------------------+
 #property copyright "Engenheiro Chefe QG - 2026"
-#property version   "1000.00"
+#property version   "1200.00"
 #property strict
 
 #include <Trade\Trade.mqh>
 CTrade trade;
 
 //====================================================================
-// 🎰 PAINEL CONFIGURÁVEL NOMAD DIGITAL (SINCRONIZADO NO CANDLE DE 6H)
+// PARÂMETROS CONFIGURÁVEIS DO ROBÔ
 //====================================================================
-input group      "--- PARÂMETROS DO COFRE ---"
-input double     InpLotSize            = 0.02;       // Lote padrão de cada tiro micro
-input double     InpTargetProfitUSD    = 10.00;      // Alvo de lucro em DÓLARES no bolso
+input group      "--- GESTÃO FINANCEIRA ---"
+input double     InpLotSize            = 0.02;       // Lote por ordem
+input double     InpTargetProfitUSD    = 10.00;      // Meta de lucro por ciclo (US$)
+input double     InpMaxLossUSD         = 40.00;      // Stop Loss máximo por ciclo (US$)
 
-ulong magic = 20261026;
+input group      "--- BLINDAGEM DE MERCADO ---"
+input int        InpMaxSpread          = 2500;       // Spread máximo permitido (pontos)
+input bool       InpBloquearFDS        = true;       // Bloquear Sábado e Domingo
+input int        InpHoraInicioSegunda  = 10;         // Hora de liberação na Segunda-feira
+input int        InpHoraFimSexta       = 18;         // Hora de bloqueio na Sexta-feira
+input bool       InpZerarNaSexta       = true;       // Fechar tudo na Sexta no horário limite
+
+ulong    magic = 20261026;
 datetime barra_viva_interna;
 datetime bloco_6h_vante;
 bool     ciclo_encerrado_neste_bloco = false;
 
+//+------------------------------------------------------------------+
+//| Inicialização do Robô                                            |
+//+------------------------------------------------------------------+
 int OnInit() 
   { 
    trade.SetExpertMagicNumber(magic); 
@@ -30,29 +41,24 @@ int OnInit()
    return(INIT_SUCCEEDED); 
   }
 
+//+------------------------------------------------------------------+
+//| Função Principal a cada Tique                                    |
+//+------------------------------------------------------------------+
 void OnTick()
   {
-   // ⏳ RELÓGIOS DE SINCRONIA: PEGA O TEMPO DO H6 GLOBAL E DA VELINHA INTERNA ATUAL
    datetime hora_bloco_6h_atual = iTime(_Symbol, PERIOD_H6, 0);
    datetime hora_vela_atual     = iTime(_Symbol, PERIOD_CURRENT, 0);
    
-   // 🔥 O ESTALO DE REINICIALIZAÇÃO: SE NASCEU UM NOVO CANDLE DE 6 HORAS, ZERA AS TRAVAS!
+   // Reinicia o ciclo na abertura de um novo candle de 6 horas
    if(bloco_6h_vante != hora_bloco_6h_atual)
      {
-      Print("🔄 [QG-SINCRO] Novo Candle de 6 Horas detectado! Resetando o circuito para o novo ciclo!");
+      Print("[SINCRO] Novo candle de 6H detectado. Ciclo reiniciado.");
       bloco_6h_vante = hora_bloco_6h_atual;
-      ciclo_encerrado_neste_bloco = false; // Desbloqueia o trator para operar o novo turno
+      ciclo_encerrado_neste_bloco = false;
      }
    
-   // 📡 BUSCA A MÁXIMA E MÍNIMA DA VELA INTERNA ANTERIOR (BARRA 1 DO TIMEFRAME DO GRÁFICO)
-   double maxima_anterior_interna = iHigh(_Symbol, PERIOD_CURRENT, 1);
-   double minima_anterior_interna = iLow(_Symbol, PERIOD_CURRENT, 1);
-   
-   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   
    //====================================================================
-   // 🪓 ETAPA 1: AUDITORIA DO COFRE (ALVO FINANCEIRO ACUMULADO DE US$ 10)
+   // ETAPA 1: AUDITORIA DE LUCRO, STOP LOSS E FECHAMENTO DE SEXTA
    //====================================================================
    double lucro_total_ciclo = 0;
    int total_ordens_ativas = 0;
@@ -66,41 +72,100 @@ void OnTick()
         }
      }
      
-   // SE O EXTRATO ACUMULADO BATER 10 DÓLARES: FECHAMENTO HIDRÁULICO IMEDIATO!
-   if(total_ordens_ativas > 0 && lucro_total_ciclo >= InpTargetProfitUSD && !ciclo_encerrado_neste_bloco)
+   // Fechamento forçado na Sexta-feira à noite
+   MqlDateTime tempo;
+   TimeCurrent(tempo);
+   if(InpZerarNaSexta && tempo.day_of_week == 5 && tempo.hour >= InpHoraFimSexta && total_ordens_ativas > 0)
      {
-      for(int i=PositionsTotal()-1; i>=0; i--)
-        {
-         if(PositionGetSymbol(i) == _Symbol && PositionGetInteger(POSITION_MAGIC) == magic)
-           {
-            ulong ticket = PositionGetInteger(POSITION_TICKET);
-            Print("🪓 [ALVO ATINGIDO] US$ ", lucro_total_ciclo, "! Liquidando ticket do bloco: ", ticket);
-            trade.PositionClose(ticket);
-           }
-        }
-      ciclo_encerrado_neste_bloco = true; // 🔥 TRAVA DE SEGURANÇA: Congela novas entradas até o próximo H6!
+      Print("[SEXTA-FEIRA] Horário limite atingido. Zerando posições para o fim de semana.");
+      FecharTodasPosicoes();
+      ciclo_encerrado_neste_bloco = true;
       return;
      }
 
+   // Verifica se bateu a meta de lucro OU o limite máximo de perda
+   if(total_ordens_ativas > 0 && !ciclo_encerrado_neste_bloco)
+     {
+      if(lucro_total_ciclo >= InpTargetProfitUSD || lucro_total_ciclo <= -MathAbs(InpMaxLossUSD))
+        {
+         string motivo = (lucro_total_ciclo >= InpTargetProfitUSD) ? "META DE LUCRO ATINGIDA" : "STOP LOSS GLOBAL ACIONADO";
+         Print("[ENCERRAMENTO] ", motivo, " | Resultado: US$ ", DoubleToString(lucro_total_ciclo, 2));
+         
+         FecharTodasPosicoes();
+         ciclo_encerrado_neste_bloco = true;
+         return;
+        }
+     }
+
    //====================================================================
-   // 🎛️ ETAPA 2: GATILHOS SNIPER DE VELINHAS INTERNAS (SE O BLOCO RECONHECER O SINAL)
+   // ETAPA 2: FILTROS DE SEGURANÇA (HORÁRIO E SPREAD)
    //====================================================================
-   // Só atira se o ciclo deste bloco de 6h não tiver sido liquidado ainda e se virou a velinha interna
+   if(!HorarioPermitido()) return;
+   
+   long spread_atual = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
+   if(spread_atual > InpMaxSpread) return;
+
+   //====================================================================
+   // ETAPA 3: GATILHOS DE ENTRADA NAS VELAS INTERNAS
+   //====================================================================
    if(!ciclo_encerrado_neste_bloco && barra_viva_interna != hora_vela_atual)
      {
-      // 🟢 TIRO BUY: O preço Ask atual estourou a MÁXIMA da velinha interna anterior!
+      double maxima_anterior_interna = iHigh(_Symbol, PERIOD_CURRENT, 1);
+      double minima_anterior_interna = iLow(_Symbol, PERIOD_CURRENT, 1);
+      double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      
+      // Rompimento da Máxima Anterior -> Compra
       if(ask >= maxima_anterior_interna)
         {
-         Print("🚀 [SNIPER BUY] Rompeu a máxima anterior interna (", maxima_anterior_interna, "). Abrindo boleta!");
-         trade.Buy(InpLotSize, _Symbol, ask, 0, 0, "Rompimento Interno Buy");
-         barra_viva_interna = hora_vela_atual; // Fecha o cadeado estritamente para esta vela menor
+         Print("[COMPRA] Rompeu máxima anterior (", maxima_anterior_interna, ") | Spread: ", spread_atual);
+         if(trade.Buy(InpLotSize, _Symbol, ask, 0, 0, "Rompimento Interno Buy"))
+            barra_viva_interna = hora_vela_atual;
         }
-      // 🔴 TIRO SELL: O preço Bid atual rasgou a MÍNIMA da velinha interna anterior!
+      // Rompimento da Mínima Anterior -> Venda
       else if(bid <= minima_anterior_interna)
         {
-         Print("📉 [SNIPER SELL] Rompeu a mínima anterior interna (", minima_anterior_interna, "). Abrindo boleta!");
-         trade.Sell(InpLotSize, _Symbol, bid, 0, 0, "Rompimento Interno Sell");
-         barra_viva_interna = hora_vela_atual; // Fecha o cadeado estritamente para esta vela menor
+         Print("[VENDA] Rompeu mínima anterior (", minima_anterior_interna, ") | Spread: ", spread_atual);
+         if(trade.Sell(InpLotSize, _Symbol, bid, 0, 0, "Rompimento Interno Sell"))
+            barra_viva_interna = hora_vela_atual;
+        }
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Verifica se o dia da semana e horário estão liberados            |
+//+------------------------------------------------------------------+
+bool HorarioPermitido()
+  {
+   MqlDateTime tempo;
+   TimeCurrent(tempo);
+   
+   // Bloqueia Domingo (0) e Sábado (6)
+   if(InpBloquearFDS && (tempo.day_of_week == 0 || tempo.day_of_week == 6))
+      return false;
+      
+   // Bloqueia Segunda-feira (1) antes do horário definido
+   if(tempo.day_of_week == 1 && tempo.hour < InpHoraInicioSegunda)
+      return false;
+      
+   // Bloqueia Sexta-feira (5) a partir do horário definido
+   if(tempo.day_of_week == 5 && tempo.hour >= InpHoraFimSexta)
+      return false;
+      
+   return true;
+  }
+
+//+------------------------------------------------------------------+
+//| Fecha todas as posições abertas pelo robô                        |
+//+------------------------------------------------------------------+
+void FecharTodasPosicoes()
+  {
+   for(int i=PositionsTotal()-1; i>=0; i--)
+     {
+      if(PositionGetSymbol(i) == _Symbol && PositionGetInteger(POSITION_MAGIC) == magic)
+        {
+         ulong ticket = PositionGetInteger(POSITION_TICKET);
+         trade.PositionClose(ticket);
         }
      }
   }
