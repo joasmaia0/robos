@@ -3,18 +3,17 @@
 //|                                           Engenheiro Chefe QG    |
 //+------------------------------------------------------------------+
 #property copyright "Engenheiro Chefe QG - 2026"
-#property version   "1450.00"
+#property version   "1500.00"
 #property strict
 
 #include <Trade\Trade.mqh>
 CTrade trade;
 
 //====================================================================
-// PARÂMETROS CONFIGURÁVEIS DO ROBÔ
+// PARÂMETROS CONFIGURÁVEIS DO ROBÔ (LOTE FIXO + GATILHO 2/10)
 //====================================================================
 input group      "--- GESTÃO FINANCEIRA ---"
-input double     InpLotSize            = 0.02;       // Lote inicial da primeira ordem
-input double     InpLotStepAdd         = 0.02;       // Soma de lote a cada nova ordem no ciclo
+input double     InpLotSize            = 0.02;       // Lote fixo em todas as ordens
 input double     InpTargetProfitUSD    = 10.00;      // Meta de lucro por ciclo (US$)
 input double     InpMaxLossUSD         = 30.00;      // Stop Loss máximo (Trava Geral) (US$)
 
@@ -116,7 +115,7 @@ void OnTick()
    if(spread_atual > InpMaxSpread) return;
 
    //====================================================================
-   // ETAPA 3: GATILHOS 2/10 NAS VELAS INTERNAS + SOMA DE LOTE
+   // ETAPA 3: GATILHOS 2/10 NAS VELAS INTERNAS (COM LOTE FIXO)
    //====================================================================
    if(!ciclo_encerrado_neste_bloco && barra_viva_interna != hora_vela_atual)
      {
@@ -134,21 +133,18 @@ void OnTick()
       double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
       double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
       
-      // Calcula o lote atual: Lote Base + (Quantidade de ordens já abertas * Soma)
-      double lote_atual = NormalizeDouble(InpLotSize + (total_ordens_ativas * InpLotStepAdd), 2);
-      
-      // Compra 2/10 abaixo da máxima anterior
+      // Compra 2/10 abaixo da máxima anterior (Lote Fixo)
       if(ask >= gatilho_compra)
         {
-         Print("[COMPRA 2/10] Lote: ", lote_atual, " | Ask: ", ask, " >= Gatilho: ", gatilho_compra);
-         if(trade.Buy(lote_atual, _Symbol, ask, 0, 0, "Sniper 2/10 Buy"))
+         Print("[COMPRA 2/10] Lote Fixo: ", InpLotSize, " | Ask: ", ask, " >= Gatilho: ", gatilho_compra);
+         if(trade.Buy(InpLotSize, _Symbol, ask, 0, 0, "Sniper 2/10 Buy"))
             barra_viva_interna = hora_vela_atual;
         }
-      // Venda 2/10 acima da mínima anterior
+      // Venda 2/10 acima da mínima anterior (Lote Fixo)
       else if(bid <= gatilho_venda)
         {
-         Print("[VENDA 2/10] Lote: ", lote_atual, " | Bid: ", bid, " <= Gatilho: ", gatilho_venda);
-         if(trade.Sell(lote_atual, _Symbol, bid, 0, 0, "Sniper 2/10 Sell"))
+         Print("[VENDA 2/10] Lote Fixo: ", InpLotSize, " | Bid: ", bid, " <= Gatilho: ", gatilho_venda);
+         if(trade.Sell(InpLotSize, _Symbol, bid, 0, 0, "Sniper 2/10 Sell"))
             barra_viva_interna = hora_vela_atual;
         }
      }
