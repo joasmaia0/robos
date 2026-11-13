@@ -3,18 +3,17 @@
 //|                                           Engenheiro Chefe QG    |
 //+------------------------------------------------------------------+
 #property copyright "Engenheiro Chefe QG - 2026"
-#property version   "1600.00"
+#property version   "1700.00"
 #property strict
 
 #include <Trade\Trade.mqh>
 CTrade trade;
 
 //====================================================================
-// PARÂMETROS CONFIGURÁVEIS DO ROBÔ (CICLO 6H + TETO DE 8 ORDENS)
+// PARÂMETROS CONFIGURÁVEIS DO ROBÔ (CICLO 6H + GATILHO 2/10)
 //====================================================================
-input group      "--- GESTÃO FINANCEIRA E DE ORDENS ---"
+input group      "--- GESTÃO FINANCEIRA ---"
 input double     InpLotSize            = 0.02;       // Lote fixo em todas as ordens
-input int        InpMaxOrdens          = 8;          // Máximo de ordens abertas (fecha tudo ao atingir)
 input double     InpMaxLossUSD         = 30.00;      // Stop Loss máximo (Trava Geral) (US$)
 
 input group      "--- BLINDAGEM DE MERCADO ---"
@@ -27,8 +26,7 @@ input bool       InpZerarNaSexta       = true;       // Fechar tudo na Sexta no 
 ulong    magic = 20261026;
 datetime barra_viva_interna;
 datetime bloco_6h_vante;
-bool     ciclo_encerrado_neste_bloco = false;
-bool     stop_emergencia_acionado    = false;
+bool     stop_emergencia_acionado = false;
 
 //+------------------------------------------------------------------+
 //| Inicialização do Robô                                            |
@@ -38,8 +36,7 @@ int OnInit()
    trade.SetExpertMagicNumber(magic); 
    barra_viva_interna = 0;
    bloco_6h_vante = 0;
-   ciclo_encerrado_neste_bloco = false;
-   stop_emergencia_acionado    = false;
+   stop_emergencia_acionado = false;
    return(INIT_SUCCEEDED); 
   }
 
@@ -64,11 +61,10 @@ void OnTick()
          FecharTodasPosicoes();
         }
       bloco_6h_vante = hora_bloco_6h_atual;
-      ciclo_encerrado_neste_bloco = false;
      }
    
    //====================================================================
-   // ETAPA 2: AUDITORIA DE TETO DE ORDENS, STOP LOSS E SEXTA-FEIRA
+   // ETAPA 2: AUDITORIA DE STOP LOSS DE EMERGÊNCIA E SEXTA-FEIRA
    //====================================================================
    double lucro_total_ciclo = 0;
    int total_ordens_ativas = 0;
@@ -89,29 +85,16 @@ void OnTick()
      {
       Print("[SEXTA-FEIRA] Horário limite atingido. Zerando posições para o fim de semana.");
       FecharTodasPosicoes();
-      ciclo_encerrado_neste_bloco = true;
       return;
      }
 
-   // Verifica se atingiu o máximo de 8 ordens OU o Stop Loss de Emergência
-   if(total_ordens_ativas > 0 && !ciclo_encerrado_neste_bloco)
+   // Verifica se bateu o Stop Loss de Emergência
+   if(total_ordens_ativas > 0 && lucro_total_ciclo <= -MathAbs(InpMaxLossUSD))
      {
-      // Caso 1: Atingiu o máximo de 8 ordens -> Fecha tudo e aguarda o próximo H6
-      if(total_ordens_ativas >= InpMaxOrdens)
-        {
-         Print("[TETO ATINGIDO] Limite máximo de ", InpMaxOrdens, " ordens alcançado! Fechando tudo e aguardando próximo H6.");
-         FecharTodasPosicoes();
-         ciclo_encerrado_neste_bloco = true;
-         return;
-        }
-      // Caso 2: Bateu o Stop Loss -> Encerra tudo e TRAVA o robô definitivamente
-      else if(lucro_total_ciclo <= -MathAbs(InpMaxLossUSD))
-        {
-         Print("[STOP LOSS GLOBAL] Prejuízo de US$ ", DoubleToString(lucro_total_ciclo, 2), ". Robô bloqueado até reinício manual!");
-         FecharTodasPosicoes();
-         stop_emergencia_acionado = true;
-         return;
-        }
+      Print("[STOP LOSS GLOBAL] Prejuízo de US$ ", DoubleToString(lucro_total_ciclo, 2), ". Robô bloqueado até reinício manual!");
+      FecharTodasPosicoes();
+      stop_emergencia_acionado = true;
+      return;
      }
 
    //====================================================================
@@ -125,7 +108,7 @@ void OnTick()
    //====================================================================
    // ETAPA 4: GATILHOS 2/10 NAS VELAS INTERNAS (COM LOTE FIXO)
    //====================================================================
-   if(!ciclo_encerrado_neste_bloco && barra_viva_interna != hora_vela_atual)
+   if(barra_viva_interna != hora_vela_atual)
      {
       double maxima_anterior_interna = iHigh(_Symbol, PERIOD_CURRENT, 1);
       double minima_anterior_interna = iLow(_Symbol, PERIOD_CURRENT, 1);
@@ -143,14 +126,14 @@ void OnTick()
       // Compra 2/10 abaixo da máxima anterior
       if(ask >= gatilho_compra)
         {
-         Print("[COMPRA 2/10] Ordem ", (total_ordens_ativas + 1), "/", InpMaxOrdens, " | Lote: ", InpLotSize);
+         Print("[COMPRA 2/10] Lote Fixo: ", InpLotSize, " | Ask: ", ask, " >= Gatilho: ", gatilho_compra);
          if(trade.Buy(InpLotSize, _Symbol, ask, 0, 0, "Sniper 2/10 Buy"))
             barra_viva_interna = hora_vela_atual;
         }
       // Venda 2/10 acima da mínima anterior
       else if(bid <= gatilho_venda)
         {
-         Print("[VENDA 2/10] Ordem ", (total_ordens_ativas + 1), "/", InpMaxOrdens, " | Lote: ", InpLotSize);
+         Print("[VENDA 2/10] Lote Fixo: ", InpLotSize, " | Bid: ", bid, " <= Gatilho: ", gatilho_venda);
          if(trade.Sell(InpLotSize, _Symbol, bid, 0, 0, "Sniper 2/10 Sell"))
             barra_viva_interna = hora_vela_atual;
         }
