@@ -3,20 +3,20 @@
 //|                                           Engenheiro Chefe QG    |
 //+------------------------------------------------------------------+
 #property copyright "Engenheiro Chefe QG - 2026"
-#property version   "2100.00"
+#property version   "2200.00"
 #property strict
 
 #include <Trade\Trade.mqh>
 CTrade trade;
 
 //====================================================================
-// PARÂMETROS CONFIGURÁVEIS (CICLO H6 + META US$ 10 + 24/7)
+// PARÂMETROS CONFIGURÁVEIS (CICLO H6 + META US$ 10 + 24/7 CONTÍNUO)
 //====================================================================
 input group      "--- GESTÃO FINANCEIRA E DE ORDENS ---"
 input double     InpLotSize            = 0.02;       // Lote fixo em todas as ordens
 input int        InpMaxOrdens          = 8;          // Máximo de ordens abertas (fecha tudo ao atingir)
 input double     InpTargetProfitUSD    = 10.00;      // Meta de lucro líquido por ciclo (US$)
-input double     InpMaxLossUSD         = 30.00;      // Stop Loss máximo (Trava Geral) (US$)
+input double     InpMaxLossUSD         = 30.00;      // Stop Loss máximo por ciclo H6 (US$)
 
 input group      "--- BLINDAGEM DE MERCADO ---"
 input int        InpMaxSpread          = 2500;       // Spread máximo permitido (pontos)
@@ -25,7 +25,6 @@ ulong    magic = 20261026;
 datetime barra_viva_interna;
 datetime bloco_6h_vante;
 bool     ciclo_encerrado_neste_bloco = false;
-bool     stop_emergencia_acionado    = false;
 
 //+------------------------------------------------------------------+
 //| Inicialização do Robô                                            |
@@ -36,8 +35,7 @@ int OnInit()
    barra_viva_interna = 0;
    bloco_6h_vante = 0;
    ciclo_encerrado_neste_bloco = false;
-   stop_emergencia_acionado    = false;
-   Print("🟢 [QG-IGNIÇÃO] Robô Sincronizado H6 (24/7 + Meta US$ 10 + Teto 8 Ordens) Iniciado!");
+   Print("🟢 [QG-IGNIÇÃO] Robô Sincronizado H6 (24/7 Sem Trava Definitiva) Iniciado!");
    return(INIT_SUCCEEDED); 
   }
 
@@ -46,8 +44,6 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnTick()
   {
-   if(stop_emergencia_acionado) return;
-
    datetime hora_bloco_6h_atual = iTime(_Symbol, PERIOD_H6, 0);
    datetime hora_vela_atual     = iTime(_Symbol, PERIOD_CURRENT, 0);
    
@@ -94,12 +90,12 @@ void OnTick()
          ciclo_encerrado_neste_bloco = true;
          return;
         }
-      // Caso 3: Bateu o Stop Loss Global -> Encerra tudo e TRAVA o robô definitivamente
+      // Caso 3: Bateu o Stop Loss -> Encerra tudo e aguarda apenas o próximo H6 para voltar
       else if(lucro_total_ciclo <= -MathAbs(InpMaxLossUSD))
         {
-         Print("[STOP LOSS GLOBAL] Prejuízo de US$ ", DoubleToString(lucro_total_ciclo, 2), ". Robô bloqueado até reinício manual!");
+         Print("[STOP LOSS CICLO] Prejuízo de US$ ", DoubleToString(lucro_total_ciclo, 2), ". Retomando no próximo H6!");
          FecharTodasPosicoes();
-         stop_emergencia_acionado = true;
+         ciclo_encerrado_neste_bloco = true;
          return;
         }
      }
