@@ -1,19 +1,21 @@
 //+------------------------------------------------------------------+
-//|                                Sniper_Reversao_2Decimos_24_7.mq5 |
+//|                               Sniper_Velas_Internas_H6_24_7.mq5  |
 //|                                           Engenheiro Chefe QG    |
 //+------------------------------------------------------------------+
 #property copyright "Engenheiro Chefe QG - 2026"
-#property version   "1800.00"
+#property version   "2100.00"
 #property strict
 
 #include <Trade\Trade.mqh>
 CTrade trade;
 
 //====================================================================
-// PARÂMETROS CONFIGURÁVEIS DO ROBÔ (REVERSÃO EXTERNA 2/10 + 24/7)
+// PARÂMETROS CONFIGURÁVEIS (CICLO H6 + META US$ 10 + 24/7)
 //====================================================================
-input group      "--- GESTÃO FINANCEIRA ---"
+input group      "--- GESTÃO FINANCEIRA E DE ORDENS ---"
 input double     InpLotSize            = 0.02;       // Lote fixo em todas as ordens
+input int        InpMaxOrdens          = 8;          // Máximo de ordens abertas (fecha tudo ao atingir)
+input double     InpTargetProfitUSD    = 10.00;      // Meta de lucro líquido por ciclo (US$)
 input double     InpMaxLossUSD         = 30.00;      // Stop Loss máximo (Trava Geral) (US$)
 
 input group      "--- BLINDAGEM DE MERCADO ---"
@@ -22,7 +24,8 @@ input int        InpMaxSpread          = 2500;       // Spread máximo permitido
 ulong    magic = 20261026;
 datetime barra_viva_interna;
 datetime bloco_6h_vante;
-bool     stop_emergencia_acionado = false;
+bool     ciclo_encerrado_neste_bloco = false;
+bool     stop_emergencia_acionado    = false;
 
 //+------------------------------------------------------------------+
 //| Inicialização do Robô                                            |
@@ -32,8 +35,9 @@ int OnInit()
    trade.SetExpertMagicNumber(magic); 
    barra_viva_interna = 0;
    bloco_6h_vante = 0;
-   stop_emergencia_acionado = false;
-   Print("🟢 [QG-IGNIÇÃO] Robô Reversão Externa 2/10 (24/7) Inicializado!");
+   ciclo_encerrado_neste_bloco = false;
+   stop_emergencia_acionado    = false;
+   Print("🟢 [QG-IGNIÇÃO] Robô Sincronizado H6 (24/7 + Meta US$ 10 + Teto 8 Ordens) Iniciado!");
    return(INIT_SUCCEEDED); 
   }
 
@@ -48,20 +52,17 @@ void OnTick()
    datetime hora_vela_atual     = iTime(_Symbol, PERIOD_CURRENT, 0);
    
    //====================================================================
-   // ETAPA 1: VIRADA DO CANDLE DE 6 HORAS -> ENCERRA O CICLO ANTERIOR
+   // ETAPA 1: VIRADA DO CANDLE DE 6 HORAS -> DESTRAVA O NOVO CICLO
    //====================================================================
    if(bloco_6h_vante != hora_bloco_6h_atual)
      {
-      if(bloco_6h_vante != 0)
-        {
-         Print("[CRONÔMETRO 6H] Fim do candle de 6 horas! Encerrando todas as posições abertas...");
-         FecharTodasPosicoes();
-        }
+      Print("[SINCRO 6H] Novo candle de 6 horas iniciado! Liberando gatilhos do ciclo.");
       bloco_6h_vante = hora_bloco_6h_atual;
+      ciclo_encerrado_neste_bloco = false;
      }
    
    //====================================================================
-   // ETAPA 2: AUDITORIA DE STOP LOSS DE EMERGÊNCIA (-US$ 30)
+   // ETAPA 2: AUDITORIA DE META (US$ 10), TETO DE 8 ORDENS E STOP LOSS
    //====================================================================
    double lucro_total_ciclo = 0;
    int total_ordens_ativas = 0;
@@ -75,22 +76,41 @@ void OnTick()
         }
      }
 
-   // Verifica se bateu o Stop Loss de Emergência
-   if(total_ordens_ativas > 0 && lucro_total_ciclo <= -MathAbs(InpMaxLossUSD))
+   if(total_ordens_ativas > 0 && !ciclo_encerrado_neste_bloco)
      {
-      Print("[STOP LOSS GLOBAL] Prejuízo de US$ ", DoubleToString(lucro_total_ciclo, 2), ". Robô bloqueado até reinício manual!");
-      FecharTodasPosicoes();
-      stop_emergencia_acionado = true;
-      return;
+      // Caso 1: Bateu a meta de US$ 10,00 -> Fecha tudo e aguarda próximo candle de 6H
+      if(lucro_total_ciclo >= InpTargetProfitUSD)
+        {
+         Print("[META ATINGIDA] Lucro líquido de US$ ", DoubleToString(lucro_total_ciclo, 2), "! Aguardando próximo H6.");
+         FecharTodasPosicoes();
+         ciclo_encerrado_neste_bloco = true;
+         return;
+        }
+      // Caso 2: Atingiu o máximo de 8 ordens simultâneas -> Fecha tudo e aguarda próximo H6
+      else if(total_ordens_ativas >= InpMaxOrdens)
+        {
+         Print("[TETO ATINGIDO] Limite máximo de ", InpMaxOrdens, " ordens simultâneas! Aguardando próximo H6.");
+         FecharTodasPosicoes();
+         ciclo_encerrado_neste_bloco = true;
+         return;
+        }
+      // Caso 3: Bateu o Stop Loss Global -> Encerra tudo e TRAVA o robô definitivamente
+      else if(lucro_total_ciclo <= -MathAbs(InpMaxLossUSD))
+        {
+         Print("[STOP LOSS GLOBAL] Prejuízo de US$ ", DoubleToString(lucro_total_ciclo, 2), ". Robô bloqueado até reinício manual!");
+         FecharTodasPosicoes();
+         stop_emergencia_acionado = true;
+         return;
+        }
      }
 
    //====================================================================
-   // ETAPA 3: FILTRO DE SPREAD E GATILHOS INVERTIDOS 2/10 (24/7)
+   // ETAPA 3: FILTRO DE SPREAD E GATILHOS 2/10 NAS VELAS INTERNAS
    //====================================================================
    long spread_atual = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
    if(spread_atual > InpMaxSpread) return;
 
-   if(barra_viva_interna != hora_vela_atual)
+   if(!ciclo_encerrado_neste_bloco && barra_viva_interna != hora_vela_atual)
      {
       double maxima_anterior_interna = iHigh(_Symbol, PERIOD_CURRENT, 1);
       double minima_anterior_interna = iLow(_Symbol, PERIOD_CURRENT, 1);
@@ -98,25 +118,25 @@ void OnTick()
       
       if(tamanho_candle <= 0) return;
       
-      double dois_decimos  = (tamanho_candle / 10.0) * 2.0;
-      double gatilho_venda = maxima_anterior_interna + dois_decimos; // 2/10 ACIMA da máxima -> VENDE
-      double gatilho_compra = minima_anterior_interna - dois_decimos; // 2/10 ABAIXO da mínima -> COMPRA
+      double dois_decimos   = (tamanho_candle / 10.0) * 2.0;
+      double gatilho_compra = maxima_anterior_interna - dois_decimos; // 2/10 abaixo da máxima
+      double gatilho_venda  = minima_anterior_interna + dois_decimos; // 2/10 acima da mínima
       
       double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
       double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
       
-      // Preço esticou 2/10 ACIMA da máxima anterior -> VENDE (Reversão)
-      if(bid >= gatilho_venda)
+      // Compra 2/10 abaixo da máxima anterior
+      if(ask >= gatilho_compra)
         {
-         Print("[VENDA 2/10 ACIMA] Lote: ", InpLotSize, " | Bid: ", bid, " >= Gatilho: ", gatilho_venda);
-         if(trade.Sell(InpLotSize, _Symbol, bid, 0, 0, "Reversao 2/10 Acima Sell"))
+         Print("[COMPRA 2/10] Ordem ", (total_ordens_ativas + 1), "/", InpMaxOrdens, " | Lote: ", InpLotSize);
+         if(trade.Buy(InpLotSize, _Symbol, ask, 0, 0, "Sniper 2/10 Buy"))
             barra_viva_interna = hora_vela_atual;
         }
-      // Preço caiu 2/10 ABAIXO da mínima anterior -> COMPRA (Reversão)
-      else if(ask <= gatilho_compra)
+      // Venda 2/10 acima da mínima anterior
+      else if(bid <= gatilho_venda)
         {
-         Print("[COMPRA 2/10 ABAIXO] Lote: ", InpLotSize, " | Ask: ", ask, " <= Gatilho: ", gatilho_compra);
-         if(trade.Buy(InpLotSize, _Symbol, ask, 0, 0, "Reversao 2/10 Abaixo Buy"))
+         Print("[VENDA 2/10] Ordem ", (total_ordens_ativas + 1), "/", InpMaxOrdens, " | Lote: ", InpLotSize);
+         if(trade.Sell(InpLotSize, _Symbol, bid, 0, 0, "Sniper 2/10 Sell"))
             barra_viva_interna = hora_vela_atual;
         }
      }
