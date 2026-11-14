@@ -3,14 +3,14 @@
 //|                                           Engenheiro Chefe QG    |
 //+------------------------------------------------------------------+
 #property copyright "Engenheiro Chefe QG - 2026"
-#property version   "2200.00"
+#property version   "2300.00"
 #property strict
 
 #include <Trade\Trade.mqh>
 CTrade trade;
 
 //====================================================================
-// PARÂMETROS CONFIGURÁVEIS (CICLO H6 + META US$ 10 + 24/7 CONTÍNUO)
+// PARÂMETROS CONFIGURÁVEIS (INÍCIO SINCRONIZADO NA PRÓXIMA VELA H6)
 //====================================================================
 input group      "--- GESTÃO FINANCEIRA E DE ORDENS ---"
 input double     InpLotSize            = 0.02;       // Lote fixo em todas as ordens
@@ -24,7 +24,7 @@ input int        InpMaxSpread          = 2500;       // Spread máximo permitido
 ulong    magic = 20261026;
 datetime barra_viva_interna;
 datetime bloco_6h_vante;
-bool     ciclo_encerrado_neste_bloco = false;
+bool     ciclo_encerrado_neste_bloco = true;
 
 //+------------------------------------------------------------------+
 //| Inicialização do Robô                                            |
@@ -33,9 +33,12 @@ int OnInit()
   { 
    trade.SetExpertMagicNumber(magic); 
    barra_viva_interna = 0;
-   bloco_6h_vante = 0;
-   ciclo_encerrado_neste_bloco = false;
-   Print("🟢 [QG-IGNIÇÃO] Robô Sincronizado H6 (24/7 Sem Trava Definitiva) Iniciado!");
+   
+   // Captura a vela de 6H atual e trava o ciclo atual para só começar na PRÓXIMA vela de 6H
+   bloco_6h_vante = iTime(_Symbol, PERIOD_H6, 0);
+   ciclo_encerrado_neste_bloco = true;
+   
+   Print("⏳ [QG-ESPERA] Robô inicializado! Aguardando a abertura da próxima vela de 6 horas (H6) para começar...");
    return(INIT_SUCCEEDED); 
   }
 
@@ -52,7 +55,7 @@ void OnTick()
    //====================================================================
    if(bloco_6h_vante != hora_bloco_6h_atual)
      {
-      Print("[SINCRO 6H] Novo candle de 6 horas iniciado! Liberando gatilhos do ciclo.");
+      Print("[SINCRO 6H] Nova vela de 6 horas iniciada! Liberando gatilhos do ciclo.");
       bloco_6h_vante = hora_bloco_6h_atual;
       ciclo_encerrado_neste_bloco = false;
      }
