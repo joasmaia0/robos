@@ -1,157 +1,69 @@
 //+------------------------------------------------------------------+
-//|                               Sniper_Velas_Internas_H6_24_7.mq5  |
+//|                                                   v700.mq5       |
 //|                                           Engenheiro Chefe QG    |
 //+------------------------------------------------------------------+
 #property copyright "Engenheiro Chefe QG - 2026"
-#property version   "2300.00"
+#property version   "700.00"
 #property strict
 
 #include <Trade\Trade.mqh>
 CTrade trade;
 
 //====================================================================
-// PARÂMETROS CONFIGURÁVEIS (INÍCIO SINCRONIZADO NA PRÓXIMA VELA H6)
+// 🎰 PAINEL CONFIGURÁVEL (COMPRA EM TODO CANDLE COM SL E TP FIXOS)
 //====================================================================
-input group      "--- GESTÃO FINANCEIRA E DE ORDENS ---"
-input double     InpLotSize            = 0.02;       // Lote fixo em todas as ordens
-input int        InpMaxOrdens          = 8;          // Máximo de ordens abertas (fecha tudo ao atingir)
-input double     InpTargetProfitUSD    = 10.00;      // Meta de lucro líquido por ciclo (US$)
-input double     InpMaxLossUSD         = 30.00;      // Stop Loss máximo por ciclo H6 (US$)
+input group      "--- PARÂMETROS DE CAPITAL ---"
+input double InpLotSize   = 0.02; // Lote de Partida Real (ProCent de 2.361 centavos)
 
-input group      "--- BLINDAGEM DE MERCADO ---"
-input int        InpMaxSpread          = 2500;       // Spread máximo permitido (pontos)
+input group      "--- MATEMÁTICA ALVO (EM PONTOS) ---"
+input int    InpTakeProfit = 300;  // Alvo de Lucro (Take Profit) em Pontos
+input int    InpStopLoss   = 100;  // Limite de Perda (Stop Loss) em Pontos
 
-ulong    magic = 20261026;
-datetime barra_viva_interna;
-datetime bloco_6h_vante;
-bool     ciclo_encerrado_neste_bloco = true;
+ulong    magic_number = 20261012;
+datetime hora_da_vela_atual = 0;
 
 //+------------------------------------------------------------------+
-//| Inicialização do Robô                                            |
+//| Expert initialization function                                   |
 //+------------------------------------------------------------------+
-int OnInit() 
-  { 
-   trade.SetExpertMagicNumber(magic); 
-   barra_viva_interna = 0;
-   
-   // Captura a vela de 6H atual e trava o ciclo atual para só começar na PRÓXIMA vela de 6H
-   bloco_6h_vante = iTime(_Symbol, PERIOD_H6, 0);
-   ciclo_encerrado_neste_bloco = true;
-   
-   Print("⏳ [QG-ESPERA] Robô inicializado! Aguardando a abertura da próxima vela de 6 horas (H6) para começar...");
-   return(INIT_SUCCEEDED); 
+int OnInit()
+  {
+   trade.SetExpertMagicNumber(magic_number);
+   hora_da_vela_atual = 0;
+   Print("🔌 [QG-MQL5] Sniper V700 Ativado! Entrada exaustiva em todo candle com TP 300 e SL 100!");
+   return(INIT_SUCCEEDED);
   }
 
 //+------------------------------------------------------------------+
-//| Função Principal a cada Tique                                    |
+//| Expert tick function                                             |
 //+------------------------------------------------------------------+
 void OnTick()
-  {
-   datetime hora_bloco_6h_atual = iTime(_Symbol, PERIOD_H6, 0);
-   datetime hora_vela_atual     = iTime(_Symbol, PERIOD_CURRENT, 0);
-   
-   //====================================================================
-   // ETAPA 1: VIRADA DO CANDLE DE 6 HORAS -> DESTRAVA O NOVO CICLO
-   //====================================================================
-   if(bloco_6h_vante != hora_bloco_6h_atual)
-     {
-      Print("[SINCRO 6H] Nova vela de 6 horas iniciada! Liberando gatilhos do ciclo.");
-      bloco_6h_vante = hora_bloco_6h_atual;
-      ciclo_encerrado_neste_bloco = false;
-     }
-   
-   //====================================================================
-   // ETAPA 2: AUDITORIA DE META (US$ 10), TETO DE 8 ORDENS E STOP LOSS
-   //====================================================================
-   double lucro_total_ciclo = 0;
-   int total_ordens_ativas = 0;
-   
-   for(int i=PositionsTotal()-1; i>=0; i--)
-     {
-      if(PositionGetSymbol(i) == _Symbol && PositionGetInteger(POSITION_MAGIC) == magic)
-        {
-         lucro_total_ciclo += PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
-         total_ordens_ativas++;
-        }
-     }
-
-   if(total_ordens_ativas > 0 && !ciclo_encerrado_neste_bloco)
-     {
-      // Caso 1: Bateu a meta de US$ 10,00 -> Fecha tudo e aguarda próximo candle de 6H
-      if(lucro_total_ciclo >= InpTargetProfitUSD)
-        {
-         Print("[META ATINGIDA] Lucro líquido de US$ ", DoubleToString(lucro_total_ciclo, 2), "! Aguardando próximo H6.");
-         FecharTodasPosicoes();
-         ciclo_encerrado_neste_bloco = true;
-         return;
-        }
-      // Caso 2: Atingiu o máximo de 8 ordens simultâneas -> Fecha tudo e aguarda próximo H6
-      else if(total_ordens_ativas >= InpMaxOrdens)
-        {
-         Print("[TETO ATINGIDO] Limite máximo de ", InpMaxOrdens, " ordens simultâneas! Aguardando próximo H6.");
-         FecharTodasPosicoes();
-         ciclo_encerrado_neste_bloco = true;
-         return;
-        }
-      // Caso 3: Bateu o Stop Loss -> Encerra tudo e aguarda apenas o próximo H6 para voltar
-      else if(lucro_total_ciclo <= -MathAbs(InpMaxLossUSD))
-        {
-         Print("[STOP LOSS CICLO] Prejuízo de US$ ", DoubleToString(lucro_total_ciclo, 2), ". Retomando no próximo H6!");
-         FecharTodasPosicoes();
-         ciclo_encerrado_neste_bloco = true;
-         return;
-        }
-     }
+  { 
+   // DNA do tempo do candle vivo atual (Barra 0)
+   datetime tempo_vela_viva = iTime(_Symbol, PERIOD_CURRENT, 0);
 
    //====================================================================
-   // ETAPA 3: FILTRO DE SPREAD E GATILHOS 2/10 NAS VELAS INTERNAS
+   // 🪓 ETAPA 1: O RELÓGIO APITOU? NOVO CANDLE NASCEU?
    //====================================================================
-   long spread_atual = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
-   if(spread_atual > InpMaxSpread) return;
-
-   if(!ciclo_encerrado_neste_bloco && barra_viva_interna != hora_vela_atual)
+   if(tempo_vela_viva != hora_da_vela_atual)
      {
-      double maxima_anterior_interna = iHigh(_Symbol, PERIOD_CURRENT, 1);
-      double minima_anterior_interna = iLow(_Symbol, PERIOD_CURRENT, 1);
-      double tamanho_candle          = maxima_anterior_interna - minima_anterior_interna;
-      
-      if(tamanho_candle <= 0) return;
-      
-      double dois_decimos   = (tamanho_candle / 10.0) * 2.0;
-      double gatilho_compra = maxima_anterior_interna - dois_decimos; // 2/10 abaixo da máxima
-      double gatilho_venda  = minima_anterior_interna + dois_decimos; // 2/10 acima da mínima
-      
+      // Preço de compra Ask vivo vindo direto do satélite de Londres
       double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-      double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
       
-      // Compra 2/10 abaixo da máxima anterior
-      if(ask >= gatilho_compra)
+      // CÁLCULO CIRÚRGICO DA BLINDAGEM DA BOLETA
+      double preco_tp = ask + (InpTakeProfit * _Point);
+      double preco_sl = ask - (InpStopLoss * _Point);
+      
+      Print("📡 [SNIPER BUY EXAUSTIVO] Novo candle detectado! Disparando COMPRA a mercado!");
+      Print("📐 Configuração de Alvos -> Preço: ", ask, " | SL: ", preco_sl, " | TP: ", preco_tp);
+      
+      // Executa o soco seco de compra injetando SL e TP direto na carcaça da ordem
+      if(trade.Buy(InpLotSize, _Symbol, ask, preco_sl, preco_tp, "Exaustivo V700"))
         {
-         Print("[COMPRA 2/10] Ordem ", (total_ordens_ativas + 1), "/", InpMaxOrdens, " | Lote: ", InpLotSize);
-         if(trade.Buy(InpLotSize, _Symbol, ask, 0, 0, "Sniper 2/10 Buy"))
-            barra_viva_interna = hora_vela_atual;
-        }
-      // Venda 2/10 acima da mínima anterior
-      else if(bid <= gatilho_venda)
-        {
-         Print("[VENDA 2/10] Ordem ", (total_ordens_ativas + 1), "/", InpMaxOrdens, " | Lote: ", InpLotSize);
-         if(trade.Sell(InpLotSize, _Symbol, bid, 0, 0, "Sniper 2/10 Sell"))
-            barra_viva_interna = hora_vela_atual;
+         // 🔒 Passa o cadeado biométrico para proibir novos tiros nesta mesma barra
+         hora_da_vela_atual = tempo_vela_viva;
         }
      }
-  }
 
-//+------------------------------------------------------------------+
-//| Fecha todas as posições abertas pelo robô                        |
-//+------------------------------------------------------------------+
-void FecharTodasPosicoes()
-  {
-   for(int i=PositionsTotal()-1; i>=0; i--)
-     {
-      if(PositionGetSymbol(i) == _Symbol && PositionGetInteger(POSITION_MAGIC) == magic)
-        {
-         ulong ticket = PositionGetInteger(POSITION_TICKET);
-         trade.PositionClose(ticket);
-        }
-     }
+   // Exibição do status no teto do gráfico para auditoria em tempo real
+   Comment("🟢 [SNIPER EXAUSTIVO V700]\nLote cravado: ", InpLotSize, "\nTake Profit Fixo: ", InpTakeProfit, " pontos\nStop Loss Fixo: ", InpStopLoss, " pontos\nÚltimo Candle Processado: ", TimeToString(hora_da_vela_atual));
   }
