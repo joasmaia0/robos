@@ -1,198 +1,120 @@
 //+------------------------------------------------------------------+
-//|                             Sniper_Velas_Internas_Blindado.mq5   |
+//|                                   Ancora_Timeframe_Generico.mq5  |
 //|                                           Engenheiro Chefe QG    |
 //+------------------------------------------------------------------+
 #property copyright "Engenheiro Chefe QG - 2026"
-#property version   "2010.00"
+#property version   "23.00"
 #property strict
 
 #include <Trade\Trade.mqh>
 CTrade trade;
 
 //====================================================================
-// PARÂMETROS CONFIGURÁVEIS (INÍCIO NA PRÓXIMA VELA H6 + STOP US$ 10)
+// PAINEL CONFIGURÁVEL PURISTA (ASK > CLOSE_ANTERIOR + ANTI-SPAM)
 //====================================================================
-input group      "--- GESTÃO FINANCEIRA E DE ORDENS ---"
-input double     InpLotSize            = 0.02;       // Lote fixo em todas as ordens
-input int        InpMaxOrdens          = 8;          // Máximo de ordens abertas (fecha tudo ao atingir)
-input double     InpTargetProfitUSD    = 10.00;      // Meta de lucro líquido por ciclo (US$)
-input double     InpMaxLossUSD         = 10.00;      // Stop Loss máximo por ciclo H6 (US$)
+input group      "--- PARÂMETROS DE CAPITAL E PROTEÇÃO ---"
+input double     InpLotSize           = 0.01;  // Lote de Partida Real
+input bool       InpUsarStopDinamico  = false; // Ativar o gatilho_stop calculado na pedra?
 
-input group      "--- BLINDAGEM DE MERCADO ---"
-input int        InpMaxSpread          = 2500;       // Spread máximo permitido (pontos)
-input bool       InpBloquearFDS        = true;       // Bloquear Sábado e Domingo
-input int        InpHoraInicioSegunda  = 14;         // Hora de liberação na Segunda (Servidor)
-input int        InpHoraFimSexta       = 23;         // Hora de bloqueio na Sexta (Servidor)
-input bool       InpZerarNaSexta       = true;       // Fechar tudo na Sexta no horário limite
+input group      "--- BLINDAGEM DE HORÁRIO E SPREAD ---"
+input int        InpMaxSpread         = 2500;  // Spread máximo permitido (pontos)
+input bool       InpBloquearFDS       = true;  // Bloquear Sábado e Domingo
+input int        InpHoraInicioSegunda = 15;    // Início Segunda (15h MT5 = 10h00 Brasil)
+input int        InpHoraFimSexta      = 23;    // Bloqueio Sexta (23h MT5 = 18h00 Brasil)
 
-ulong    magic = 20261026;
-datetime barra_viva_interna;
-datetime bloco_6h_vante;
-bool     ciclo_encerrado_neste_bloco = true;
+datetime hora_da_vela_atual = 0;
+ulong    magic_number = 20260909;
+int      compra = 0;
 
 //+------------------------------------------------------------------+
 //| Inicialização do Robô                                            |
 //+------------------------------------------------------------------+
-int OnInit() 
-  { 
-   trade.SetExpertMagicNumber(magic); 
-   barra_viva_interna = 0;
-   
-   // Captura o bloco H6 atual e trava até o nascimento da PRÓXIMA vela de 6 horas
-   bloco_6h_vante = iTime(_Symbol, PERIOD_H6, 0);
-   ciclo_encerrado_neste_bloco = true;
-   
-   Print("⏳ [QG-ESPERA] Robô inicializado! Aguardando o nascimento da próxima vela de 6 horas (H6) para começar...");
-   return(INIT_SUCCEEDED); 
+int OnInit()
+  {
+   trade.SetExpertMagicNumber(magic_number);
+   hora_da_vela_atual = 0;
+   compra = 0;
+   return(INIT_SUCCEEDED);
   }
 
 //+------------------------------------------------------------------+
 //| Função Principal a cada Tique                                    |
 //+------------------------------------------------------------------+
 void OnTick()
-  {
-   datetime hora_bloco_6h_atual = iTime(_Symbol, PERIOD_H6, 0);
-   datetime hora_vela_atual     = iTime(_Symbol, PERIOD_CURRENT, 0);
-   
-   //====================================================================
-   // ETAPA 1: VIRADA DE 6 HORAS -> DESTRAVA AUTOMATICAMENTE O NOVO CICLO
-   //====================================================================
-   if(bloco_6h_vante != hora_bloco_6h_atual)
-     {
-      Print("🟢 [SINCRO 6H] Nova vela de 6 horas nasceu! Gatilhos liberados.");
-      bloco_6h_vante = hora_bloco_6h_atual;
-      ciclo_encerrado_neste_bloco = false;
-     }
-   
-   //====================================================================
-   // ETAPA 2: AUDITORIA DE META (US$ 10), TETO DE 8 ORDENS E STOP US$ 10
-   //====================================================================
-   double lucro_total_ciclo = 0;
-   int total_ordens_ativas = 0;
-   
-   for(int i=PositionsTotal()-1; i>=0; i--)
-     {
-      if(PositionGetSymbol(i) == _Symbol && PositionGetInteger(POSITION_MAGIC) == magic)
-        {
-         lucro_total_ciclo += PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
-         total_ordens_ativas++;
-        }
-     }
-     
-   // Fechamento forçado na Sexta-feira à noite
+  { 
    MqlDateTime tempo;
    TimeCurrent(tempo);
-   if(InpZerarNaSexta && tempo.day_of_week == 5 && tempo.hour >= InpHoraFimSexta && total_ordens_ativas > 0)
+
+   // Encerramento forçado na Sexta-feira à noite
+   if(tempo.day_of_week == 5 && tempo.hour >= InpHoraFimSexta)
      {
-      Print("[SEXTA-FEIRA] Horário limite atingido. Zerando posições para o fim de semana.");
-      FecharTodasPosicoes();
-      ciclo_encerrado_neste_bloco = true;
+      FecharPosicoesAbertas();
       return;
      }
 
-   // Verifica Meta de Lucro, Máximo de 8 Ordens ou Stop Loss de US$ 10
-   if(total_ordens_ativas > 0 && !ciclo_encerrado_neste_bloco)
+   datetime tempo_vela_viva = iTime(_Symbol, PERIOD_CURRENT, 0);
+
+   //====================================================================
+   // ETAPA 1: VELA VIRADA -> FECHA TUDO PRIMEIRO E SÓ DEPOIS RESETA A TRAVA
+   //====================================================================
+   if(hora_da_vela_atual != tempo_vela_viva)
      {
-      // Caso 1: Bateu a meta de US$ 10,00 -> Fecha tudo e aguarda próximo bloco de 6H
-      if(lucro_total_ciclo >= InpTargetProfitUSD)
-        {
-         Print("[META ATINGIDA] Lucro líquido de US$ ", DoubleToString(lucro_total_ciclo, 2), "! Retomando no próximo H6.");
-         FecharTodasPosicoes();
-         ciclo_encerrado_neste_bloco = true;
-         return;
-        }
-      // Caso 2: Atingiu o máximo de 8 ordens simultâneas -> Fecha tudo e aguarda próximo H6
-      else if(total_ordens_ativas >= InpMaxOrdens)
-        {
-         Print("[TETO ATINGIDO] Limite máximo de ", InpMaxOrdens, " ordens simultâneas! Retomando no próximo H6.");
-         FecharTodasPosicoes();
-         ciclo_encerrado_neste_bloco = true;
-         return;
-        }
-      // Caso 3: Bateu o Stop Loss de US$ 10 -> Encerra tudo e retorna sozinho no próximo H6
-      else if(lucro_total_ciclo <= -MathAbs(InpMaxLossUSD))
-        {
-         Print("[STOP LOSS CICLO] Perda de US$ ", DoubleToString(lucro_total_ciclo, 2), ". Retornando automaticamente no próximo H6!");
-         FecharTodasPosicoes();
-         ciclo_encerrado_neste_bloco = true;
-         return;
-        }
+      FecharPosicoesAbertas();
+      hora_da_vela_atual = tempo_vela_viva;
+      compra = 0;
      }
 
    //====================================================================
-   // ETAPA 3: FILTROS DE SEGURANÇA (HORÁRIO E SPREAD)
+   // ETAPA 2: FILTROS DE SEGURANÇA (FIM DE SEMANA E SPREAD)
    //====================================================================
-   if(!HorarioPermitido()) return;
-   
-   long spread_atual = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
-   if(spread_atual > InpMaxSpread) return;
+   if(!HorarioPermitido(tempo)) return;
+   if(SymbolInfoInteger(_Symbol, SYMBOL_SPREAD) > InpMaxSpread) return;
 
    //====================================================================
-   // ETAPA 4: GATILHOS 2/10 NAS VELAS INTERNAS (COM LOTE FIXO)
+   // ETAPA 3: GATILHO DE COMPRA ACIMA DO FECHAMENTO ANTERIOR (ANTI-SPAM)
    //====================================================================
-   if(!ciclo_encerrado_neste_bloco && barra_viva_interna != hora_vela_atual)
+   static datetime ultima_tentativa = 0;
+
+   if(compra == 0 && (TimeCurrent() - ultima_tentativa) >= 15)
      {
-      double maxima_anterior_interna = iHigh(_Symbol, PERIOD_CURRENT, 1);
-      double minima_anterior_interna = iLow(_Symbol, PERIOD_CURRENT, 1);
-      double tamanho_candle          = maxima_anterior_interna - minima_anterior_interna;
-      
-      if(tamanho_candle <= 0) return;
-      
-      double dois_decimos   = (tamanho_candle / 10.0) * 2.0;
-      double gatilho_compra = maxima_anterior_interna - dois_decimos; // 2/10 abaixo da máxima
-      double gatilho_venda  = minima_anterior_interna + dois_decimos; // 2/10 acima da mínima
-      
       double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-      double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      double close_anterior = iClose(_Symbol, PERIOD_CURRENT, 1);
       
-      // Compra 2/10 abaixo da máxima anterior
-      if(ask >= gatilho_compra)
+      if(ask > close_anterior)
         {
-         Print("[COMPRA 2/10] Ordem ", (total_ordens_ativas + 1), "/", InpMaxOrdens, " | Lote: ", InpLotSize);
-         if(trade.Buy(InpLotSize, _Symbol, ask, 0, 0, "Sniper 2/10 Buy"))
-            barra_viva_interna = hora_vela_atual;
-        }
-      // Venda 2/10 acima da mínima anterior
-      else if(bid <= gatilho_venda)
-        {
-         Print("[VENDA 2/10] Ordem ", (total_ordens_ativas + 1), "/", InpMaxOrdens, " | Lote: ", InpLotSize);
-         if(trade.Sell(InpLotSize, _Symbol, bid, 0, 0, "Sniper 2/10 Sell"))
-            barra_viva_interna = hora_vela_atual;
+         ultima_tentativa = TimeCurrent(); // Registra o horário para não repetir em milissegundos
+         double sl = 0;
+         if(InpUsarStopDinamico)
+           {
+            double maxima_anterior = iHigh(_Symbol, PERIOD_CURRENT, 1);
+            double minima_anterior = iLow(_Symbol, PERIOD_CURRENT, 1);
+            double tamanho_candle_anterior = maxima_anterior - minima_anterior;
+            sl = NormalizeDouble(minima_anterior - (tamanho_candle_anterior / 3.0), _Digits);
+           }
+
+         if(trade.Buy(InpLotSize, _Symbol, ask, sl, 0, "Estouro Close"))
+           {
+            compra = 1;
+           }
         }
      }
   }
 
-//+------------------------------------------------------------------+
-//| Verifica se o dia da semana e horário estão liberados            |
-//+------------------------------------------------------------------+
-bool HorarioPermitido()
+bool HorarioPermitido(MqlDateTime &tempo)
   {
-   MqlDateTime tempo;
-   TimeCurrent(tempo);
-   
-   if(InpBloquearFDS && (tempo.day_of_week == 0 || tempo.day_of_week == 6))
-      return false;
-      
-   if(tempo.day_of_week == 1 && tempo.hour < InpHoraInicioSegunda)
-      return false;
-      
-   if(tempo.day_of_week == 5 && tempo.hour >= InpHoraFimSexta)
-      return false;
-      
+   if(InpBloquearFDS && (tempo.day_of_week == 0 || tempo.day_of_week == 6)) return false;
+   if(tempo.day_of_week == 1 && tempo.hour < InpHoraInicioSegunda) return false;
+   if(tempo.day_of_week == 5 && tempo.hour >= InpHoraFimSexta) return false;
    return true;
   }
 
-//+------------------------------------------------------------------+
-//| Fecha todas as posições abertas pelo robô                        |
-//+------------------------------------------------------------------+
-void FecharTodasPosicoes()
+void FecharPosicoesAbertas()
   {
    for(int i=PositionsTotal()-1; i>=0; i--)
      {
-      if(PositionGetSymbol(i) == _Symbol && PositionGetInteger(POSITION_MAGIC) == magic)
+      if(PositionGetSymbol(i) == _Symbol && PositionGetInteger(POSITION_MAGIC) == magic_number)
         {
-         ulong ticket = PositionGetInteger(POSITION_TICKET);
-         trade.PositionClose(ticket);
+         trade.PositionClose(PositionGetTicket(i));
         }
      }
   }
