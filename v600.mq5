@@ -1,19 +1,20 @@
 //+------------------------------------------------------------------+
-//|                                   Malha_5Partes_Simultanea.mq5   |
+//|                                   Malha_5Partes_Progressiva.mq5  |
 //|                                           Engenheiro Chefe QG    |
 //+------------------------------------------------------------------+
 #property copyright "Engenheiro Chefe QG - 2026"
-#property version   "26.00"
+#property version   "27.00"
 #property strict
 
 #include <Trade\Trade.mqh>
 CTrade trade;
 
 //====================================================================
-// PAINEL CONFIGURÁVEL (MALHA SIMULTÂNEA DE 5 PARTES EM TODOS CANDLES)
+// PAINEL CONFIGURÁVEL (5 PARTES SIMULTÂNEAS + SOMA PROGRESSIVA DE LOTE)
 //====================================================================
 input group      "--- PARÂMETROS DO COFRE ---"
-input double     InpLotSize            = 0.02;       // Lote fixo por cada disparo nas 5 partes
+input double     InpLotInicial         = 0.02;       // Lote da primeira ordem
+input double     InpLotStepAdd         = 0.02;       // Soma progressiva a cada disparo (0.02 -> 0.04 -> 0.06)
 input double     InpMetaLucroGeralUSD  = 10.00;      // Fecha todas juntas se a soma bater X dólares (US$)
 input double     InpStopLossGeralUSD   = 40.00;      // Trava de segurança máxima da conta (US$)
 input int        InpMaxOrdensAbertas   = 15;         // Limite máximo total de ordens simultâneas
@@ -21,8 +22,9 @@ input int        InpMaxOrdensAbertas   = 15;         // Limite máximo total de 
 input group      "--- GEOMETRIA DAS 5 PARTES ---"
 input int        InpDivisoesCandle     = 5;          // Divide o candle em 5 partes iguais
 
-ulong    magic = 20260920;
+ulong    magic = 20260921;
 
+double   lote_atual = 0.02;
 datetime vela_atual_controle = 0;
 bool     disparou_cima[6];   // Controle independente das 5 partes superiores no candle
 bool     disparou_baixo[6];  // Controle independente das 5 partes inferiores no candle
@@ -33,8 +35,9 @@ bool     disparou_baixo[6];  // Controle independente das 5 partes inferiores no
 int OnInit() 
   { 
    trade.SetExpertMagicNumber(magic); 
+   lote_atual = InpLotInicial;
    ResetarGatilhosVela();
-   Print("🌐 [MALHA 5 PARTES] Sistema Simultâneo em Todos os Candles Inicializado!");
+   Print("🌐 [MALHA 5P PROGRESSIVA] Sistema Simultâneo + Escada de Lote Inicializado!");
    return(INIT_SUCCEEDED); 
   }
 
@@ -54,7 +57,7 @@ void OnTick()
   {
    datetime hora_vela = iTime(_Symbol, PERIOD_CURRENT, 0);
 
-   // A cada novo candle que nasce, libera as 5 partes para operarem novamente
+   // A cada novo candle que nasce, libera as 5 partes para dispararem novamente
    if(vela_atual_controle != hora_vela)
      {
       ResetarGatilhosVela();
@@ -74,6 +77,12 @@ void OnTick()
         }
      }
 
+   // Se todas as ordens fecharam no Take Profit individual, reseta o lote para o inicial
+   if(total_vivas == 0)
+     {
+      lote_atual = InpLotInicial;
+     }
+
    //====================================================================
    // ETAPA 1: COLHEITA GERAL SE BATER A META COLETIVA OU STOP MÁXIMO
    //====================================================================
@@ -81,14 +90,15 @@ void OnTick()
      {
       if(lucro_total_flutuante >= InpMetaLucroGeralUSD || lucro_total_flutuante <= -MathAbs(InpStopLossGeralUSD))
         {
-         Print("💰 [COLHEITA MALHA] Resultado líquido: US$ ", DoubleToString(lucro_total_flutuante, 2));
+         Print("💰 [COLHEITA MALHA] Resultado líquido: US$ ", DoubleToString(lucro_total_flutuante, 2), " | Resetando lote.");
          FecharTodasPosicoes();
+         lote_atual = InpLotInicial;
          return;
         }
      }
 
    //====================================================================
-   // ETAPA 2: VARREDURA SIMULTÂNEA DAS 5 PARTES DO CANDLE ANTERIOR
+   // ETAPA 2: VARREDURA SIMULTÂNEA DAS 5 PARTES + SOMA PROGRESSIVA
    //====================================================================
    double r_max = iHigh(_Symbol, PERIOD_CURRENT, 1);
    double r_min = iLow(_Symbol, PERIOD_CURRENT, 1);
@@ -96,7 +106,6 @@ void OnTick()
    
    if(amplitude <= (10 * _Point)) return;
 
-   // Divide a vela anterior em 5 partes iguais
    double uma_parte = amplitude / (double)InpDivisoesCandle;
    
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
@@ -105,46 +114,49 @@ void OnTick()
    long stop_level = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
    double min_dist = stop_level * _Point;
 
-   // Varre as 5 partes de forma simultânea e independente
+   // Varre todas as 5 partes simultaneamente no mesmo candle
    for(int parte = 1; parte <= InpDivisoesCandle; parte++)
      {
       if(total_vivas >= InpMaxOrdensAbertas) break;
 
-      // Calcula a linha superior e inferior de cada uma das 5 partes
       double linha_cima  = NormalizeDouble(r_max + (parte * uma_parte), _Digits);
       double linha_baixo = NormalizeDouble(r_min - (parte * uma_parte), _Digits);
 
-      // 1. Bateu na parte de cima -> Compra simultânea com alvo de 1 parte acima
+      // 1. Bateu na parte de cima -> Compra simultânea e soma o degrau de lote
       if(!disparou_cima[parte] && ask >= linha_cima)
         {
          double tp_buy = NormalizeDouble(ask + uma_parte, _Digits);
-         if((tp_buy - ask) <= min_dist) tp_buy = 0; // Se o alvo for menor que o mínimo da corretora, deixa sem TP fixo
+         if((tp_buy - ask) <= min_dist) tp_buy = 0;
          
-         if(trade.Buy(InpLotSize, _Symbol, ask, 0, tp_buy, "Malha 5P Buy P" + IntegerToString(parte)))
+         double lote_envio = NormalizeDouble(lote_atual, 2);
+         if(trade.Buy(lote_envio, _Symbol, ask, 0, tp_buy, "Malha5P Buy P" + IntegerToString(parte)))
            {
             disparou_cima[parte] = true;
             total_vivas++;
+            lote_atual = NormalizeDouble(lote_atual + InpLotStepAdd, 2); // Soma 0.02 -> 0.04 -> 0.06...
            }
         }
 
-      // 2. Desceu e bateu na parte de baixo -> Venda simultânea com alvo de 1 parte abaixo
+      // 2. Desceu e bateu na parte de baixo -> Venda simultânea e soma o degrau de lote
       if(!disparou_baixo[parte] && bid <= linha_baixo && total_vivas < InpMaxOrdensAbertas)
         {
          double tp_sell = NormalizeDouble(bid - uma_parte, _Digits);
          if((bid - tp_sell) <= min_dist) tp_sell = 0;
          
-         if(trade.Sell(InpLotSize, _Symbol, bid, 0, tp_sell, "Malha 5P Sell P" + IntegerToString(parte)))
+         double lote_envio = NormalizeDouble(lote_atual, 2);
+         if(trade.Sell(lote_envio, _Symbol, bid, 0, tp_sell, "Malha5P Sell P" + IntegerToString(parte)))
            {
             disparou_baixo[parte] = true;
             total_vivas++;
+            lote_atual = NormalizeDouble(lote_atual + InpLotStepAdd, 2); // Soma 0.02 -> 0.04 -> 0.06...
            }
         }
      }
 
-   Comment("🌐 [MALHA SIMULTÂNEA 5 PARTES - TODOS OS CANDLES]\n",
-           "Ordens Simultâneas Ativas: ", total_vivas, " / ", InpMaxOrdensAbertas, "\n",
-           "Lucro Flutuante Total: US$ ", DoubleToString(lucro_total_flutuante, 2), " / Meta: US$ ", InpMetaLucroGeralUSD, "\n",
-           "Tamanho de Cada Parte (1/5): ", DoubleToString(uma_parte / _Point, 0), " pontos");
+   Comment("🌐 [MALHA SIMULTÂNEA 5 PARTES + LOTE PROGRESSIVO]\n",
+           "Ordens Simultâneas: ", total_vivas, " / ", InpMaxOrdensAbertas, "\n",
+           "Próximo Lote da Escada: ", lote_atual, "\n",
+           "Lucro Flutuante Total: US$ ", DoubleToString(lucro_total_flutuante, 2), " / Meta: US$ ", InpMetaLucroGeralUSD);
   }
 
 void FecharTodasPosicoes()
