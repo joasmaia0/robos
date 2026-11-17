@@ -3,14 +3,14 @@
 //|                                           Engenheiro Chefe QG    |
 //+------------------------------------------------------------------+
 #property copyright "Engenheiro Chefe QG - 2026"
-#property version   "2000.00"
+#property version   "2010.00"
 #property strict
 
 #include <Trade\Trade.mqh>
 CTrade trade;
 
 //====================================================================
-// PARÂMETROS CONFIGURÁVEIS (STOP LOSS US$ 10 + RETORNO AUTOMÁTICO)
+// PARÂMETROS CONFIGURÁVEIS (INÍCIO NA PRÓXIMA VELA H6 + STOP US$ 10)
 //====================================================================
 input group      "--- GESTÃO FINANCEIRA E DE ORDENS ---"
 input double     InpLotSize            = 0.02;       // Lote fixo em todas as ordens
@@ -28,7 +28,7 @@ input bool       InpZerarNaSexta       = true;       // Fechar tudo na Sexta no 
 ulong    magic = 20261026;
 datetime barra_viva_interna;
 datetime bloco_6h_vante;
-bool     ciclo_encerrado_neste_bloco = false;
+bool     ciclo_encerrado_neste_bloco = true;
 
 //+------------------------------------------------------------------+
 //| Inicialização do Robô                                            |
@@ -37,8 +37,12 @@ int OnInit()
   { 
    trade.SetExpertMagicNumber(magic); 
    barra_viva_interna = 0;
-   bloco_6h_vante = 0;
-   ciclo_encerrado_neste_bloco = false;
+   
+   // Captura o bloco H6 atual e trava até o nascimento da PRÓXIMA vela de 6 horas
+   bloco_6h_vante = iTime(_Symbol, PERIOD_H6, 0);
+   ciclo_encerrado_neste_bloco = true;
+   
+   Print("⏳ [QG-ESPERA] Robô inicializado! Aguardando o nascimento da próxima vela de 6 horas (H6) para começar...");
    return(INIT_SUCCEEDED); 
   }
 
@@ -55,6 +59,7 @@ void OnTick()
    //====================================================================
    if(bloco_6h_vante != hora_bloco_6h_atual)
      {
+      Print("🟢 [SINCRO 6H] Nova vela de 6 horas nasceu! Gatilhos liberados.");
       bloco_6h_vante = hora_bloco_6h_atual;
       ciclo_encerrado_neste_bloco = false;
      }
