@@ -1,33 +1,34 @@
 //+------------------------------------------------------------------+
-//|                                   Malha_5Partes_Progressiva.mq5  |
+//|                             Sniper_Velas_Internas_Blindado.mq5   |
 //|                                           Engenheiro Chefe QG    |
 //+------------------------------------------------------------------+
 #property copyright "Engenheiro Chefe QG - 2026"
-#property version   "27.00"
+#property version   "2000.00"
 #property strict
 
 #include <Trade\Trade.mqh>
 CTrade trade;
 
 //====================================================================
-// PAINEL CONFIGURÁVEL (5 PARTES SIMULTÂNEAS + SOMA PROGRESSIVA DE LOTE)
+// PARÂMETROS CONFIGURÁVEIS (STOP LOSS US$ 10 + RETORNO AUTOMÁTICO)
 //====================================================================
-input group      "--- PARÂMETROS DO COFRE ---"
-input double     InpLotInicial         = 0.02;       // Lote da primeira ordem
-input double     InpLotStepAdd         = 0.02;       // Soma progressiva a cada disparo (0.02 -> 0.04 -> 0.06)
-input double     InpMetaLucroGeralUSD  = 10.00;      // Fecha todas juntas se a soma bater X dólares (US$)
-input double     InpStopLossGeralUSD   = 40.00;      // Trava de segurança máxima da conta (US$)
-input int        InpMaxOrdensAbertas   = 15;         // Limite máximo total de ordens simultâneas
+input group      "--- GESTÃO FINANCEIRA E DE ORDENS ---"
+input double     InpLotSize            = 0.02;       // Lote fixo em todas as ordens
+input int        InpMaxOrdens          = 8;          // Máximo de ordens abertas (fecha tudo ao atingir)
+input double     InpTargetProfitUSD    = 10.00;      // Meta de lucro líquido por ciclo (US$)
+input double     InpMaxLossUSD         = 10.00;      // Stop Loss máximo por ciclo H6 (US$)
 
-input group      "--- GEOMETRIA DAS 5 PARTES ---"
-input int        InpDivisoesCandle     = 5;          // Divide o candle em 5 partes iguais
+input group      "--- BLINDAGEM DE MERCADO ---"
+input int        InpMaxSpread          = 2500;       // Spread máximo permitido (pontos)
+input bool       InpBloquearFDS        = true;       // Bloquear Sábado e Domingo
+input int        InpHoraInicioSegunda  = 14;         // Hora de liberação na Segunda (Servidor)
+input int        InpHoraFimSexta       = 23;         // Hora de bloqueio na Sexta (Servidor)
+input bool       InpZerarNaSexta       = true;       // Fechar tudo na Sexta no horário limite
 
-ulong    magic = 20260921;
-
-double   lote_atual = 0.02;
-datetime vela_atual_controle = 0;
-bool     disparou_cima[6];   // Controle independente das 5 partes superiores no candle
-bool     disparou_baixo[6];  // Controle independente das 5 partes inferiores no candle
+ulong    magic = 20261026;
+datetime barra_viva_interna;
+datetime bloco_6h_vante;
+bool     ciclo_encerrado_neste_bloco = false;
 
 //+------------------------------------------------------------------+
 //| Inicialização do Robô                                            |
@@ -35,19 +36,10 @@ bool     disparou_baixo[6];  // Controle independente das 5 partes inferiores no
 int OnInit() 
   { 
    trade.SetExpertMagicNumber(magic); 
-   lote_atual = InpLotInicial;
-   ResetarGatilhosVela();
-   Print("🌐 [MALHA 5P PROGRESSIVA] Sistema Simultâneo + Escada de Lote Inicializado!");
+   barra_viva_interna = 0;
+   bloco_6h_vante = 0;
+   ciclo_encerrado_neste_bloco = false;
    return(INIT_SUCCEEDED); 
-  }
-
-void ResetarGatilhosVela()
-  {
-   for(int p = 1; p <= 5; p++)
-     {
-      disparou_cima[p]  = false;
-      disparou_baixo[p] = false;
-     }
   }
 
 //+------------------------------------------------------------------+
@@ -55,117 +47,147 @@ void ResetarGatilhosVela()
 //+------------------------------------------------------------------+
 void OnTick()
   {
-   datetime hora_vela = iTime(_Symbol, PERIOD_CURRENT, 0);
-
-   // A cada novo candle que nasce, libera as 5 partes para dispararem novamente
-   if(vela_atual_controle != hora_vela)
+   datetime hora_bloco_6h_atual = iTime(_Symbol, PERIOD_H6, 0);
+   datetime hora_vela_atual     = iTime(_Symbol, PERIOD_CURRENT, 0);
+   
+   //====================================================================
+   // ETAPA 1: VIRADA DE 6 HORAS -> DESTRAVA AUTOMATICAMENTE O NOVO CICLO
+   //====================================================================
+   if(bloco_6h_vante != hora_bloco_6h_atual)
      {
-      ResetarGatilhosVela();
-      vela_atual_controle = hora_vela;
+      bloco_6h_vante = hora_bloco_6h_atual;
+      ciclo_encerrado_neste_bloco = false;
      }
-
-   // Audita todas as posições simultâneas abertas
-   int total_vivas = 0;
-   double lucro_total_flutuante = 0.0;
-
+   
+   //====================================================================
+   // ETAPA 2: AUDITORIA DE META (US$ 10), TETO DE 8 ORDENS E STOP US$ 10
+   //====================================================================
+   double lucro_total_ciclo = 0;
+   int total_ordens_ativas = 0;
+   
    for(int i=PositionsTotal()-1; i>=0; i--)
      {
       if(PositionGetSymbol(i) == _Symbol && PositionGetInteger(POSITION_MAGIC) == magic)
         {
-         total_vivas++;
-         lucro_total_flutuante += PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+         lucro_total_ciclo += PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+         total_ordens_ativas++;
         }
      }
-
-   // Se todas as ordens fecharam no Take Profit individual, reseta o lote para o inicial
-   if(total_vivas == 0)
+     
+   // Fechamento forçado na Sexta-feira à noite
+   MqlDateTime tempo;
+   TimeCurrent(tempo);
+   if(InpZerarNaSexta && tempo.day_of_week == 5 && tempo.hour >= InpHoraFimSexta && total_ordens_ativas > 0)
      {
-      lote_atual = InpLotInicial;
+      Print("[SEXTA-FEIRA] Horário limite atingido. Zerando posições para o fim de semana.");
+      FecharTodasPosicoes();
+      ciclo_encerrado_neste_bloco = true;
+      return;
      }
 
-   //====================================================================
-   // ETAPA 1: COLHEITA GERAL SE BATER A META COLETIVA OU STOP MÁXIMO
-   //====================================================================
-   if(total_vivas > 0)
+   // Verifica Meta de Lucro, Máximo de 8 Ordens ou Stop Loss de US$ 10
+   if(total_ordens_ativas > 0 && !ciclo_encerrado_neste_bloco)
      {
-      if(lucro_total_flutuante >= InpMetaLucroGeralUSD || lucro_total_flutuante <= -MathAbs(InpStopLossGeralUSD))
+      // Caso 1: Bateu a meta de US$ 10,00 -> Fecha tudo e aguarda próximo bloco de 6H
+      if(lucro_total_ciclo >= InpTargetProfitUSD)
         {
-         Print("💰 [COLHEITA MALHA] Resultado líquido: US$ ", DoubleToString(lucro_total_flutuante, 2), " | Resetando lote.");
+         Print("[META ATINGIDA] Lucro líquido de US$ ", DoubleToString(lucro_total_ciclo, 2), "! Retomando no próximo H6.");
          FecharTodasPosicoes();
-         lote_atual = InpLotInicial;
+         ciclo_encerrado_neste_bloco = true;
+         return;
+        }
+      // Caso 2: Atingiu o máximo de 8 ordens simultâneas -> Fecha tudo e aguarda próximo H6
+      else if(total_ordens_ativas >= InpMaxOrdens)
+        {
+         Print("[TETO ATINGIDO] Limite máximo de ", InpMaxOrdens, " ordens simultâneas! Retomando no próximo H6.");
+         FecharTodasPosicoes();
+         ciclo_encerrado_neste_bloco = true;
+         return;
+        }
+      // Caso 3: Bateu o Stop Loss de US$ 10 -> Encerra tudo e retorna sozinho no próximo H6
+      else if(lucro_total_ciclo <= -MathAbs(InpMaxLossUSD))
+        {
+         Print("[STOP LOSS CICLO] Perda de US$ ", DoubleToString(lucro_total_ciclo, 2), ". Retornando automaticamente no próximo H6!");
+         FecharTodasPosicoes();
+         ciclo_encerrado_neste_bloco = true;
          return;
         }
      }
 
    //====================================================================
-   // ETAPA 2: VARREDURA SIMULTÂNEA DAS 5 PARTES + SOMA PROGRESSIVA
+   // ETAPA 3: FILTROS DE SEGURANÇA (HORÁRIO E SPREAD)
    //====================================================================
-   double r_max = iHigh(_Symbol, PERIOD_CURRENT, 1);
-   double r_min = iLow(_Symbol, PERIOD_CURRENT, 1);
-   double amplitude = r_max - r_min;
+   if(!HorarioPermitido()) return;
    
-   if(amplitude <= (10 * _Point)) return;
+   long spread_atual = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
+   if(spread_atual > InpMaxSpread) return;
 
-   double uma_parte = amplitude / (double)InpDivisoesCandle;
-   
-   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   
-   long stop_level = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
-   double min_dist = stop_level * _Point;
-
-   // Varre todas as 5 partes simultaneamente no mesmo candle
-   for(int parte = 1; parte <= InpDivisoesCandle; parte++)
+   //====================================================================
+   // ETAPA 4: GATILHOS 2/10 NAS VELAS INTERNAS (COM LOTE FIXO)
+   //====================================================================
+   if(!ciclo_encerrado_neste_bloco && barra_viva_interna != hora_vela_atual)
      {
-      if(total_vivas >= InpMaxOrdensAbertas) break;
-
-      double linha_cima  = NormalizeDouble(r_max + (parte * uma_parte), _Digits);
-      double linha_baixo = NormalizeDouble(r_min - (parte * uma_parte), _Digits);
-
-      // 1. Bateu na parte de cima -> Compra simultânea e soma o degrau de lote
-      if(!disparou_cima[parte] && ask >= linha_cima)
+      double maxima_anterior_interna = iHigh(_Symbol, PERIOD_CURRENT, 1);
+      double minima_anterior_interna = iLow(_Symbol, PERIOD_CURRENT, 1);
+      double tamanho_candle          = maxima_anterior_interna - minima_anterior_interna;
+      
+      if(tamanho_candle <= 0) return;
+      
+      double dois_decimos   = (tamanho_candle / 10.0) * 2.0;
+      double gatilho_compra = maxima_anterior_interna - dois_decimos; // 2/10 abaixo da máxima
+      double gatilho_venda  = minima_anterior_interna + dois_decimos; // 2/10 acima da mínima
+      
+      double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      
+      // Compra 2/10 abaixo da máxima anterior
+      if(ask >= gatilho_compra)
         {
-         double tp_buy = NormalizeDouble(ask + uma_parte, _Digits);
-         if((tp_buy - ask) <= min_dist) tp_buy = 0;
-         
-         double lote_envio = NormalizeDouble(lote_atual, 2);
-         if(trade.Buy(lote_envio, _Symbol, ask, 0, tp_buy, "Malha5P Buy P" + IntegerToString(parte)))
-           {
-            disparou_cima[parte] = true;
-            total_vivas++;
-            lote_atual = NormalizeDouble(lote_atual + InpLotStepAdd, 2); // Soma 0.02 -> 0.04 -> 0.06...
-           }
+         Print("[COMPRA 2/10] Ordem ", (total_ordens_ativas + 1), "/", InpMaxOrdens, " | Lote: ", InpLotSize);
+         if(trade.Buy(InpLotSize, _Symbol, ask, 0, 0, "Sniper 2/10 Buy"))
+            barra_viva_interna = hora_vela_atual;
         }
-
-      // 2. Desceu e bateu na parte de baixo -> Venda simultânea e soma o degrau de lote
-      if(!disparou_baixo[parte] && bid <= linha_baixo && total_vivas < InpMaxOrdensAbertas)
+      // Venda 2/10 acima da mínima anterior
+      else if(bid <= gatilho_venda)
         {
-         double tp_sell = NormalizeDouble(bid - uma_parte, _Digits);
-         if((bid - tp_sell) <= min_dist) tp_sell = 0;
-         
-         double lote_envio = NormalizeDouble(lote_atual, 2);
-         if(trade.Sell(lote_envio, _Symbol, bid, 0, tp_sell, "Malha5P Sell P" + IntegerToString(parte)))
-           {
-            disparou_baixo[parte] = true;
-            total_vivas++;
-            lote_atual = NormalizeDouble(lote_atual + InpLotStepAdd, 2); // Soma 0.02 -> 0.04 -> 0.06...
-           }
+         Print("[VENDA 2/10] Ordem ", (total_ordens_ativas + 1), "/", InpMaxOrdens, " | Lote: ", InpLotSize);
+         if(trade.Sell(InpLotSize, _Symbol, bid, 0, 0, "Sniper 2/10 Sell"))
+            barra_viva_interna = hora_vela_atual;
         }
      }
-
-   Comment("🌐 [MALHA SIMULTÂNEA 5 PARTES + LOTE PROGRESSIVO]\n",
-           "Ordens Simultâneas: ", total_vivas, " / ", InpMaxOrdensAbertas, "\n",
-           "Próximo Lote da Escada: ", lote_atual, "\n",
-           "Lucro Flutuante Total: US$ ", DoubleToString(lucro_total_flutuante, 2), " / Meta: US$ ", InpMetaLucroGeralUSD);
   }
 
+//+------------------------------------------------------------------+
+//| Verifica se o dia da semana e horário estão liberados            |
+//+------------------------------------------------------------------+
+bool HorarioPermitido()
+  {
+   MqlDateTime tempo;
+   TimeCurrent(tempo);
+   
+   if(InpBloquearFDS && (tempo.day_of_week == 0 || tempo.day_of_week == 6))
+      return false;
+      
+   if(tempo.day_of_week == 1 && tempo.hour < InpHoraInicioSegunda)
+      return false;
+      
+   if(tempo.day_of_week == 5 && tempo.hour >= InpHoraFimSexta)
+      return false;
+      
+   return true;
+  }
+
+//+------------------------------------------------------------------+
+//| Fecha todas as posições abertas pelo robô                        |
+//+------------------------------------------------------------------+
 void FecharTodasPosicoes()
   {
    for(int i=PositionsTotal()-1; i>=0; i--)
      {
       if(PositionGetSymbol(i) == _Symbol && PositionGetInteger(POSITION_MAGIC) == magic)
         {
-         trade.PositionClose(PositionGetTicket(i));
+         ulong ticket = PositionGetInteger(POSITION_TICKET);
+         trade.PositionClose(ticket);
         }
      }
   }
