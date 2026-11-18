@@ -3,19 +3,18 @@
 //|                                           Engenheiro Chefe QG    |
 //+------------------------------------------------------------------+
 #property copyright "Engenheiro Chefe QG - 2026"
-#property version   "25.00"
+#property version   "22.60"
 #property strict
 
 #include <Trade\Trade.mqh>
 CTrade trade;
 
 //====================================================================
-// PAINEL CONFIGURÁVEL PURISTA (VENDA CLOSE + STOP DIÁRIO US$ 30)
+// PAINEL CONFIGURÁVEL PURISTA (ASK > CLOSE_ANTERIOR + STOP DIÁRIO)
 //====================================================================
 input group      "--- PARÂMETROS DE CAPITAL E PROTEÇÃO ---"
 input double     InpLotSize           = 0.01;  // Lote de Partida Real
 input double     InpMaxLossDiarioUSD  = 30.00; // Perda máxima permitida no DIA (US$)
-input bool       InpUsarStopDinamico  = false; // Ativar o stop calculado na pedra?
 
 input group      "--- BLINDAGEM DE HORÁRIO E SPREAD ---"
 input int        InpMaxSpread         = 2500;  // Spread máximo permitido (pontos)
@@ -25,11 +24,7 @@ input int        InpHoraFimSexta      = 23;    // Bloqueio Sexta (23h MT5 = 18h0
 
 datetime hora_da_vela_atual = 0;
 ulong    magic_number = 20260909;
-int      venda = 0;
-
-int      dia_controle = -1;
-double   lucro_fechado_dia = 0.0;
-bool     stop_diario_acionado = false;
+int      compra = 0;
 
 //+------------------------------------------------------------------+
 //| Inicialização do Robô                                            |
@@ -38,10 +33,7 @@ int OnInit()
   {
    trade.SetExpertMagicNumber(magic_number);
    hora_da_vela_atual = 0;
-   venda = 0;
-   dia_controle = -1;
-   lucro_fechado_dia = 0.0;
-   stop_diario_acionado = false;
+   compra = 0;
    return(INIT_SUCCEEDED);
   }
 
@@ -53,38 +45,12 @@ void OnTick()
    MqlDateTime tempo;
    TimeCurrent(tempo);
 
-   // Reinicia o contador de lucro/prejuízo na virada do dia do servidor
-   if(dia_controle != tempo.day_of_year)
-     {
-      dia_controle = tempo.day_of_year;
-      lucro_fechado_dia = 0.0;
-      stop_diario_acionado = false;
-     }
-
-   // Calcula o lucro/prejuízo flutuante das posições abertas deste robô
-   double lucro_flutuante = 0.0;
-   for(int i=PositionsTotal()-1; i>=0; i--)
-     {
-      if(PositionGetSymbol(i) == _Symbol && PositionGetInteger(POSITION_MAGIC) == magic_number)
-        {
-         lucro_flutuante += PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
-        }
-     }
-
    //====================================================================
-   // ETAPA 0: AUDITORIA DO STOP LOSS DIÁRIO DE US$ 30,00
+   // TRAVA DE PERDA MÁXIMA DIÁRIA (US$ 30,00)
    //====================================================================
-   if(!stop_diario_acionado && (lucro_fechado_dia + lucro_flutuante) <= -MathAbs(InpMaxLossDiarioUSD))
+   if(CalcularResultadoRealDoDia() <= -MathAbs(InpMaxLossDiarioUSD))
      {
-      Print("🛑 [STOP DIÁRIO] Limite de perda de US$ ", InpMaxLossDiarioUSD, " atingido! Pausando até amanhã.");
-      stop_diario_acionado = true;
       FecharPosicoesAbertas();
-      return;
-     }
-
-   if(stop_diario_acionado)
-     {
-      Comment("🛑 [STOP DIÁRIO ACIONADO]\nPerda máxima de US$ ", InpMaxLossDiarioUSD, " atingida hoje. Retorno automático amanhã.");
       return;
      }
 
@@ -104,7 +70,7 @@ void OnTick()
      {
       FecharPosicoesAbertas();
       hora_da_vela_atual = tempo_vela_viva;
-      venda = 0;
+      compra = 0;
      }
 
    //====================================================================
@@ -114,37 +80,59 @@ void OnTick()
    if(SymbolInfoInteger(_Symbol, SYMBOL_SPREAD) > InpMaxSpread) return;
 
    //====================================================================
-   // ETAPA 3: GATILHO DE VENDA ABAIXO DO FECHAMENTO ANTERIOR (ANTI-SPAM)
+   // ETAPA 3: GATILHO DE COMPRA ACIMA DO FECHAMENTO ANTERIOR
    //====================================================================
-   static datetime ultima_tentativa = 0;
-
-   if(venda == 0 && (TimeCurrent() - ultima_tentativa) >= 15)
+   if(compra == 0)
      {
-      double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
       double close_anterior = iClose(_Symbol, PERIOD_CURRENT, 1);
       
-      if(bid < close_anterior)
+      if(ask > close_anterior)
         {
-         ultima_tentativa = TimeCurrent();
-         double sl = 0;
-         if(InpUsarStopDinamico)
+         if(trade.Buy(InpLotSize, _Symbol, ask, 0, 0, "Estouro Close"))
            {
-            double maxima_anterior = iHigh(_Symbol, PERIOD_CURRENT, 1);
-            double minima_anterior = iLow(_Symbol, PERIOD_CURRENT, 1);
-            double tamanho_candle_anterior = maxima_anterior - minima_anterior;
-            sl = NormalizeDouble(maxima_anterior + (tamanho_candle_anterior / 3.0), _Digits);
+            compra = 1;
            }
+        }
+     }
+  }
 
-         if(trade.Sell(InpLotSize, _Symbol, bid, sl, 0, "Estouro Close Sell"))
+//+------------------------------------------------------------------+
+//| Calcula o lucro/perda real do dia (Fechado + Aberto)             |
+//+------------------------------------------------------------------+
+double CalcularResultadoRealDoDia()
+  {
+   datetime inicio_dia = iTime(_Symbol, PERIOD_D1, 0);
+   double total_dia = 0.0;
+
+   if(HistorySelect(inicio_dia, TimeCurrent()))
+     {
+      int total_deals = HistoryDealsTotal();
+      for(int i = 0; i < total_deals; i++)
+        {
+         ulong ticket = HistoryDealGetTicket(i);
+         if(HistoryDealGetInteger(ticket, DEAL_MAGIC) == magic_number && HistoryDealGetString(ticket, DEAL_SYMBOL) == _Symbol)
            {
-            venda = 1;
+            long entry = HistoryDealGetInteger(ticket, DEAL_ENTRY);
+            if(entry == DEAL_ENTRY_OUT || entry == DEAL_ENTRY_INOUT)
+              {
+               total_dia += HistoryDealGetDouble(ticket, DEAL_PROFIT) 
+                          + HistoryDealGetDouble(ticket, DEAL_SWAP) 
+                          + HistoryDealGetDouble(ticket, DEAL_COMMISSION);
+              }
            }
         }
      }
 
-   Comment("🟢 [ÂNCORA GENÉRICO - VENDA CLOSE]\n",
-           "Resultado do Dia: US$ ", DoubleToString(lucro_fechado_dia + lucro_flutuante, 2), " / Stop Diário: -US$ ", InpMaxLossDiarioUSD, "\n",
-           "Lote Fixo: ", InpLotSize);
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      if(PositionGetSymbol(i) == _Symbol && PositionGetInteger(POSITION_MAGIC) == magic_number)
+        {
+         total_dia += PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+        }
+     }
+
+   return total_dia;
   }
 
 bool HorarioPermitido(MqlDateTime &tempo)
@@ -161,11 +149,7 @@ void FecharPosicoesAbertas()
      {
       if(PositionGetSymbol(i) == _Symbol && PositionGetInteger(POSITION_MAGIC) == magic_number)
         {
-         double res = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
-         if(trade.PositionClose(PositionGetTicket(i)))
-           {
-            lucro_fechado_dia += res;
-           }
+         trade.PositionClose(PositionGetTicket(i));
         }
      }
   }
