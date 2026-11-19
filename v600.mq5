@@ -14,7 +14,7 @@ CTrade trade;
 //====================================================================
 input group      "--- PARÂMETROS DE CAPITAL E STOP LOSS ---"
 input double     InpLotSize           = 0.01;  // Lote de Partida Real
-input double     InpFracaoStopOpen    = 2.0;   // Margem abaixo da abertura em décimos da vela anterior (2.0 = 2/10)
+input double     InpFracaoStopOpen    = 5.0;   // Margem abaixo da abertura em décimos da vela anterior (2.0 = 2/10)
 input int        InpMinStopPontos     = 50;    // Distância mínima de segurança abaixo da abertura (pontos)
 input double     InpMaxLossDiarioUSD  = 30.00; // Perda máxima permitida no DIA (US$)
 
