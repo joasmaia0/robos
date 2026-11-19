@@ -3,7 +3,7 @@
 //|                                           Engenheiro Chefe QG    |
 //+------------------------------------------------------------------+
 #property copyright "Engenheiro Chefe QG - 2026"
-#property version   "29.00"
+#property version   "29.10"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -122,8 +122,8 @@ void OnTick()
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double dist_min_ema = InpMinDistEmaPontos * _Point;
 
-   bool em_tendencia_alta  = (bid > ema200 && (ema50 - ema200) >= dist_min_ema);
-   bool em_tendencia_baixa = (ask < ema200 && (ema200 - ema50) >= dist_min_ema);
+   bool em_tendencia_alta  = (bid > ema200[0] && (ema50[0] - ema200[0]) >= dist_min_ema);
+   bool em_tendencia_baixa = (ask < ema200[0] && (ema200[0] - ema50[0]) >= dist_min_ema);
 
    string status_mercado = "⚠️ MERCADO LATERALIZADO (AGUARDANDO DIREÇÃO)";
    if(em_tendencia_alta)  status_mercado = "📈 TENDÊNCIA DE ALTA (MODO COMPRA ATIVO)";
