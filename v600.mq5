@@ -3,20 +3,25 @@
 //|                                           Engenheiro Chefe QG    |
 //+------------------------------------------------------------------+
 #property copyright "Engenheiro Chefe QG - 2026"
-#property version   "27.00"
+#property version   "29.00"
 #property strict
 
 #include <Trade\Trade.mqh>
 CTrade trade;
 
 //====================================================================
-// PAINEL CONFIGURÁVEL PURISTA (BUY > CLOSE + SL ABAIXO DA ABERTURA)
+// PAINEL CONFIGURÁVEL PURISTA (FILTRO EMA 50/200 + STOP DIÁRIO)
 //====================================================================
 input group      "--- PARÂMETROS DE CAPITAL E STOP LOSS ---"
 input double     InpLotSize           = 0.01;  // Lote de Partida Real
-input double     InpFracaoStopOpen    = 5.0;   // Margem abaixo da abertura em décimos da vela anterior (2.0 = 2/10)
-input int        InpMinStopPontos     = 50;    // Distância mínima de segurança abaixo da abertura (pontos)
+input double     InpFracaoStopOpen    = 3.0;   // Margem do SL na abertura em décimos da vela anterior
+input int        InpMinStopPontos     = 50;    // Distância mínima de segurança do SL (pontos)
 input double     InpMaxLossDiarioUSD  = 30.00; // Perda máxima permitida no DIA (US$)
+
+input group      "--- FILTRO DE TENDÊNCIA (MÉDIAS EXPONENCIAIS) ---"
+input int        InpEmaRapida         = 50;    // Período da Média Rápida (EMA 50)
+input int        InpEmaLenta          = 200;   // Período da Média Lenta (EMA 200)
+input int        InpMinDistEmaPontos  = 20;    // Distância mínima entre EMA 50 e 200 para confirmar tendência
 
 input group      "--- BLINDAGEM DE HORÁRIO E SPREAD ---"
 input int        InpMaxSpread         = 2500;  // Spread máximo permitido (pontos)
@@ -26,7 +31,10 @@ input int        InpHoraFimSexta      = 23;    // Bloqueio Sexta (23h MT5 = 18h0
 
 datetime hora_da_vela_atual = 0;
 ulong    magic_number = 20260909;
-int      compra = 0;
+int      operacao_vela = 0;
+
+int      handle_ema50;
+int      handle_ema200;
 
 //+------------------------------------------------------------------+
 //| Inicialização do Robô                                            |
@@ -34,9 +42,18 @@ int      compra = 0;
 int OnInit()
   {
    trade.SetExpertMagicNumber(magic_number);
+   
+   handle_ema50  = iMA(_Symbol, PERIOD_CURRENT, InpEmaRapida, 0, MODE_EMA, PRICE_CLOSE);
+   handle_ema200 = iMA(_Symbol, PERIOD_CURRENT, InpEmaLenta, 0, MODE_EMA, PRICE_CLOSE);
+   
+   if(handle_ema50 == INVALID_HANDLE || handle_ema200 == INVALID_HANDLE)
+     {
+      Print("❌ Erro ao inicializar indicadores EMA!");
+      return(INIT_FAILED);
+     }
+     
    hora_da_vela_atual = 0;
-   compra = 0;
-   Print("🔌 [QG-MQL5] Âncora V27 Ativado! Compra > Close Anterior + Stop Loss calibrado abaixo da abertura!");
+   operacao_vela = 0;
    return(INIT_SUCCEEDED);
   }
 
@@ -51,9 +68,11 @@ void OnTick()
    //====================================================================
    // TRAVA 1: PERDA MÁXIMA DIÁRIA (US$ 30,00)
    //====================================================================
-   if(CalcularResultadoRealDoDia() <= -MathAbs(InpMaxLossDiarioUSD))
+   double resultado_hoje = CalcularResultadoRealDoDia();
+   if(resultado_hoje <= -MathAbs(InpMaxLossDiarioUSD))
      {
       FecharPosicoesAbertas();
+      Comment("🛑 [STOP DIÁRIO ATINGIDO]\nPerda hoje: US$ ", DoubleToString(resultado_hoje, 2), ". Retorno automático amanhã.");
       return;
      }
 
@@ -63,6 +82,7 @@ void OnTick()
    if(tempo.day_of_week == 5 && tempo.hour >= InpHoraFimSexta)
      {
       FecharPosicoesAbertas();
+      Comment("⏸️ [PAUSA SEXTA À NOITE]\nPosições zeradas para o fim de semana.");
       return;
      }
 
@@ -75,61 +95,92 @@ void OnTick()
      {
       FecharPosicoesAbertas();
       hora_da_vela_atual = tempo_vela_viva;
-      compra = 0;
+      operacao_vela = 0;
      }
 
    //====================================================================
    // ETAPA 2: FILTROS DE SEGURANÇA (FIM DE SEMANA E SPREAD)
    //====================================================================
-   if(!HorarioPermitido(tempo)) return;
+   if(!HorarioPermitido(tempo))
+     {
+      Comment("⏸️ [HORÁRIO BLOQUEADO]\nAguardando abertura permitida (Segunda 10h00 Brasil / 15h00 Servidor).");
+      return;
+     }
    if(SymbolInfoInteger(_Symbol, SYMBOL_SPREAD) > InpMaxSpread) return;
 
    //====================================================================
-   // ETAPA 3: COMPRA > CLOSE ANTERIOR + STOP LOSS ABAIXO DA ABERTURA
+   // ETAPA 3: LEITURA DA TENDÊNCIA (EMA 50 vs EMA 200)
+   //====================================================================
+   double ema50[], ema200[];
+   ArraySetAsSeries(ema50, true);
+   ArraySetAsSeries(ema200, true);
+   
+   if(CopyBuffer(handle_ema50, 0, 0, 2, ema50) < 2) return;
+   if(CopyBuffer(handle_ema200, 0, 0, 2, ema200) < 2) return;
+
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double dist_min_ema = InpMinDistEmaPontos * _Point;
+
+   bool em_tendencia_alta  = (bid > ema200 && (ema50 - ema200) >= dist_min_ema);
+   bool em_tendencia_baixa = (ask < ema200 && (ema200 - ema50) >= dist_min_ema);
+
+   string status_mercado = "⚠️ MERCADO LATERALIZADO (AGUARDANDO DIREÇÃO)";
+   if(em_tendencia_alta)  status_mercado = "📈 TENDÊNCIA DE ALTA (MODO COMPRA ATIVO)";
+   if(em_tendencia_baixa) status_mercado = "📉 TENDÊNCIA DE BAIXA (MODO VENDA ATIVO)";
+
+   //====================================================================
+   // ETAPA 4: EXECUÇÃO DIRECIONAL (COMPRA NA ALTA / VENDA NA BAIXA)
    //====================================================================
    static datetime ultima_tentativa = 0;
 
-   if(compra == 0 && (TimeCurrent() - ultima_tentativa) >= 15)
+   if(operacao_vela == 0 && (TimeCurrent() - ultima_tentativa) >= 15)
      {
-      double ask            = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-      double close_anterior = iClose(_Symbol, PERIOD_CURRENT, 1);
-      
-      if(ask > close_anterior)
+      double close_anterior  = iClose(_Symbol, PERIOD_CURRENT, 1);
+      double open_atual      = iOpen(_Symbol, PERIOD_CURRENT, 0);
+      double maxima_anterior = iHigh(_Symbol, PERIOD_CURRENT, 1);
+      double minima_anterior = iLow(_Symbol, PERIOD_CURRENT, 1);
+      double amp_anterior    = maxima_anterior - minima_anterior;
+
+      double margem_stop = (amp_anterior / 10.0) * InpFracaoStopOpen;
+      if(margem_stop < (InpMinStopPontos * _Point))
+         margem_stop = InpMinStopPontos * _Point;
+
+      long stop_level = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+      double min_broker = (stop_level + 10) * _Point;
+
+      // 1. MODO COMPRA (TENDÊNCIA DE ALTA CONFIRMADA + ROMPEU CLOSE ANTERIOR)
+      if(em_tendencia_alta && ask > close_anterior)
         {
          ultima_tentativa = TimeCurrent();
-
-         // Lê a abertura do candle atual e a amplitude do candle anterior
-         double open_atual      = iOpen(_Symbol, PERIOD_CURRENT, 0);
-         double maxima_anterior = iHigh(_Symbol, PERIOD_CURRENT, 1);
-         double minima_anterior = iLow(_Symbol, PERIOD_CURRENT, 1);
-         double amp_anterior    = maxima_anterior - minima_anterior;
-
-         // Calcula a margem equilibrada (2/10 da vela anterior, respeitando o mínimo em pontos)
-         double margem_stop = (amp_anterior / 10.0) * InpFracaoStopOpen;
-         if(margem_stop < (InpMinStopPontos * _Point))
-            margem_stop = InpMinStopPontos * _Point;
-
-         // Posiciona o Stop Loss exatamente abaixo da abertura do candle atual
          double sl = NormalizeDouble(open_atual - margem_stop, _Digits);
+         if((ask - sl) < min_broker) sl = NormalizeDouble(ask - min_broker, _Digits);
 
-         // Garante que o SL respeita a distância mínima exigida pela corretora
-         long stop_level = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
-         double min_broker = (stop_level + 10) * _Point;
-         if((ask - sl) < min_broker)
-            sl = NormalizeDouble(ask - min_broker, _Digits);
-
-         if(trade.Buy(InpLotSize, _Symbol, ask, sl, 0, "Estouro Close + SL Open"))
+         if(trade.Buy(InpLotSize, _Symbol, ask, sl, 0, "Ancora Alta Buy"))
            {
-            compra = 1;
-            Print("🎯 [COMPRA EXECUTADA] Entrada: ", ask, " | Abertura Vela: ", open_atual, " | SL Abaixo Abertura: ", sl);
+            operacao_vela = 1;
+           }
+        }
+      // 2. MODO VENDA (TENDÊNCIA DE BAIXA CONFIRMADA + CAIU ABAIXO DO CLOSE ANTERIOR)
+      else if(em_tendencia_baixa && bid < close_anterior)
+        {
+         ultima_tentativa = TimeCurrent();
+         double sl = NormalizeDouble(open_atual + margem_stop, _Digits);
+         if((sl - bid) < min_broker) sl = NormalizeDouble(bid + min_broker, _Digits);
+
+         if(trade.Sell(InpLotSize, _Symbol, bid, sl, 0, "Ancora Baixa Sell"))
+           {
+            operacao_vela = 1;
            }
         }
      }
+
+   Comment("📡 [ÂNCORA GENÉRICO V29 - FILTRO EMA 50/200]\n",
+           "Diagnóstico: ", status_mercado, "\n",
+           "Resultado Hoje: US$ ", DoubleToString(resultado_hoje, 2), " / Stop Diário: -US$ ", InpMaxLossDiarioUSD, "\n",
+           "Lote Fixo: ", InpLotSize);
   }
 
-//+------------------------------------------------------------------+
-//| Calcula o lucro/perda real do dia (Fechado + Aberto)             |
-//+------------------------------------------------------------------+
 double CalcularResultadoRealDoDia()
   {
    datetime inicio_dia = iTime(_Symbol, PERIOD_D1, 0);
