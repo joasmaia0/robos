@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//|                                 Sniper_Extremos_Vela_Purista.mq5 |
+//|                                   Sniper_Divisao10_PorCandle.mq5 |
 //|                                           Engenheiro Chefe QG    |
 //+------------------------------------------------------------------+
 #property copyright "Engenheiro Chefe QG - 2026"
@@ -10,13 +10,14 @@
 CTrade trade;
 
 input double InpLotSize           = 0.02;  // Lote fixo por operação
-input double InpMaxLossDiarioUSD  = 20.00; // Perda máxima permitida no DIA (US$)
+input int    InpCandlesEncerrar   = 3;     // Encerra cada ordem no final do Xº candle (Padrão: 3)
+input double InpMaxLossDiarioUSD  = 10.00; // Perda máxima permitida no DIA (US$)
 input bool   InpBloquearFDS       = true;  // Bloquear Sábado e Domingo
 input int    InpHoraInicioSegunda = 15;    // Início Segunda (15h MT5 = 10h00 Brasil)
 input int    InpHoraFimSexta      = 23;    // Bloqueio Sexta (23h MT5 = 18h00 Brasil)
 
 datetime hora_vela = 0;
-ulong    magic = 20261125;
+ulong    magic = 20261123;
 bool     operou_vela = false;
 
 int OnInit()
@@ -30,7 +31,7 @@ void OnTick()
    MqlDateTime t;
    TimeCurrent(t);
 
-   // Trava de Perda Máxima Diária (Fechado + Aberto)
+   // Trava de Perda Máxima Diária de US$ 10,00 (Fechado + Aberto)
    double res_hoje = ResultadoDia();
    if(res_hoje <= -MathAbs(InpMaxLossDiarioUSD))
      {
@@ -44,11 +45,24 @@ void OnTick()
      { FecharTudo(); Comment("Pausa Sexta à noite."); return; }
 
    datetime vela_viva = iTime(_Symbol, PERIOD_CURRENT, 0);
+   int      seg_vela  = PeriodSeconds(PERIOD_CURRENT);
 
-   // Virada do candle -> Encerra a operação anterior e libera novo cartucho
+   // Virada do candle -> Encerra individualmente quem completou 3 candles e libera novo tiro
    if(hora_vela != vela_viva)
      {
-      FecharTudo();
+      for(int i=PositionsTotal()-1; i>=0; i--)
+        {
+         if(PositionGetSymbol(i) == _Symbol && PositionGetInteger(POSITION_MAGIC) == magic)
+           {
+            ulong tk = PositionGetInteger(POSITION_TICKET);
+            datetime t_abertura = (datetime)PositionGetInteger(POSITION_TIME);
+            datetime vela_abertura = t_abertura - (t_abertura % seg_vela);
+            int velas_passadas = (int)((vela_viva - vela_abertura) / seg_vela);
+            
+            if(velas_passadas >= InpCandlesEncerrar)
+              trade.PositionClose(tk);
+           }
+        }
       hora_vela = vela_viva;
       operou_vela = false;
      }
@@ -58,32 +72,36 @@ void OnTick()
       (t.day_of_week == 1 && t.hour < InpHoraInicioSegunda))
      { Comment("Pausa programada (Fim de semana / Segunda cedo)."); return; }
 
-   // Gatilhos nos extremos da vela anterior (1 operação por candle)
+   // Divisão por 10 -> Compra 2/10 abaixo da máxima | Vende 2/10 acima da mínima
    if(!operou_vela)
      {
       double max_ant = iHigh(_Symbol, PERIOD_CURRENT, 1);
       double min_ant = iLow(_Symbol, PERIOD_CURRENT, 1);
-      double ask     = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-      double bid     = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      double amp     = max_ant - min_ant;
+      if(amp <= 0) return;
 
-      // Bateu ou passou da máxima -> VENDE
-      if(bid >= max_ant)
+      double dois_decimos   = (amp / 10.0) * 2.0;
+      double gatilho_compra = NormalizeDouble(max_ant - dois_decimos, _Digits);
+      double gatilho_venda  = NormalizeDouble(min_ant + dois_decimos, _Digits);
+
+      double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+
+      if(ask >= gatilho_compra)
         {
-         if(trade.Sell(InpLotSize, _Symbol, bid, 0, 0, "Sell Maxima"))
+         if(trade.Buy(InpLotSize, _Symbol, ask, 0, 0, "Buy 2/10 Max 3V"))
             operou_vela = true;
         }
-      // Bateu ou passou da mínima -> COMPRA
-      else if(ask <= min_ant)
+      else if(bid <= gatilho_venda)
         {
-         if(trade.Buy(InpLotSize, _Symbol, ask, 0, 0, "Buy Minima"))
+         if(trade.Sell(InpLotSize, _Symbol, bid, 0, 0, "Sell 2/10 Min 3V"))
             operou_vela = true;
         }
      }
 
-   Comment("🟢 [SNIPER EXTREMOS + STOP DIÁRIO]\n",
+   Comment("🟢 [SNIPER DIVISÃO 10 -> SAÍDA NO 3º CANDLE]\n",
            "Resultado Hoje: US$ ", DoubleToString(res_hoje, 2), " / Stop Diário: -US$ ", InpMaxLossDiarioUSD, "\n",
-           "Status: ", (operou_vela ? "POSICIONADO (FECHA NO FIM DO CANDLE)" : "VIGIANDO MÁXIMA E MÍNIMA"), "\n",
-           "Venda na Máx: ", iHigh(_Symbol, PERIOD_CURRENT, 1), " | Compra na Mín: ", iLow(_Symbol, PERIOD_CURRENT, 1));
+           "Status Vela Atual: ", (operou_vela ? "TIRO EXECUTADO" : "VIGIANDO GATILHOS 2/10"));
   }
 
 double ResultadoDia()
