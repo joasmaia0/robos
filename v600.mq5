@@ -1,16 +1,17 @@
+
 //+------------------------------------------------------------------+
 //|                             Sniper_Velas_Internas_Blindado.mq5   |
 //|                                           Engenheiro Chefe QG    |
 //+------------------------------------------------------------------+
 #property copyright "Engenheiro Chefe QG - 2026"
-#property version   "2000.00"
+#property version   "2010.00"
 #property strict
 
 #include <Trade\Trade.mqh>
 CTrade trade;
 
 //====================================================================
-// PARÂMETROS CONFIGURÁVEIS (STOP LOSS US$ 10 + RETORNO AUTOMÁTICO)
+// PARÂMETROS CONFIGURÁVEIS (INÍCIO SINCRONIZADO NA VIRADA DO H6)
 //====================================================================
 input group      "--- GESTÃO FINANCEIRA E DE ORDENS ---"
 input double     InpLotSize            = 0.01;       // Lote fixo em todas as ordens
@@ -28,17 +29,21 @@ input bool       InpZerarNaSexta       = true;       // Fechar tudo na Sexta no 
 ulong    magic = 20261026;
 datetime barra_viva_interna;
 datetime bloco_6h_vante;
-bool     ciclo_encerrado_neste_bloco = false;
+bool     ciclo_encerrado_neste_bloco = true;
 
 //+------------------------------------------------------------------+
-//| Inicialização do Robô                                            |
+//| Inicialização do Robô (Nasce travado até o próximo candle H6)    |
 //+------------------------------------------------------------------+
 int OnInit() 
   { 
    trade.SetExpertMagicNumber(magic); 
    barra_viva_interna = 0;
-   bloco_6h_vante = 0;
-   ciclo_encerrado_neste_bloco = false;
+   
+   // Registra o bloco H6 atual e trava até nascer a PRÓXIMA vela de 6 horas!
+   bloco_6h_vante = iTime(_Symbol, PERIOD_H6, 0);
+   ciclo_encerrado_neste_bloco = true;
+   
+   Print("⏳ [QG-MQL5] Sniper V2010 em modo de espera! Aguardando abertura do próximo candle H6 para iniciar!");
    return(INIT_SUCCEEDED); 
   }
 
@@ -57,6 +62,7 @@ void OnTick()
      {
       bloco_6h_vante = hora_bloco_6h_atual;
       ciclo_encerrado_neste_bloco = false;
+      Print("🚀 [VIRADA H6 CONFIRMADA] Novo candle de 6 horas nasceu! Gatilhos liberados!");
      }
    
    //====================================================================
@@ -88,7 +94,6 @@ void OnTick()
    // Verifica Meta de Lucro, Máximo de 8 Ordens ou Stop Loss de US$ 10
    if(total_ordens_ativas > 0 && !ciclo_encerrado_neste_bloco)
      {
-      // Caso 1: Bateu a meta de US$ 10,00 -> Fecha tudo e aguarda próximo bloco de 6H
       if(lucro_total_ciclo >= InpTargetProfitUSD)
         {
          Print("[META ATINGIDA] Lucro líquido de US$ ", DoubleToString(lucro_total_ciclo, 2), "! Retomando no próximo H6.");
@@ -96,7 +101,6 @@ void OnTick()
          ciclo_encerrado_neste_bloco = true;
          return;
         }
-      // Caso 2: Atingiu o máximo de 8 ordens simultâneas -> Fecha tudo e aguarda próximo H6
       else if(total_ordens_ativas >= InpMaxOrdens)
         {
          Print("[TETO ATINGIDO] Limite máximo de ", InpMaxOrdens, " ordens simultâneas! Retomando no próximo H6.");
@@ -104,7 +108,6 @@ void OnTick()
          ciclo_encerrado_neste_bloco = true;
          return;
         }
-      // Caso 3: Bateu o Stop Loss de US$ 10 -> Encerra tudo e retorna sozinho no próximo H6
       else if(lucro_total_ciclo <= -MathAbs(InpMaxLossUSD))
         {
          Print("[STOP LOSS CICLO] Perda de US$ ", DoubleToString(lucro_total_ciclo, 2), ". Retornando automaticamente no próximo H6!");
@@ -134,20 +137,18 @@ void OnTick()
       if(tamanho_candle <= 0) return;
       
       double dois_decimos   = (tamanho_candle / 10.0) * 2.0;
-      double gatilho_compra = maxima_anterior_interna - dois_decimos; // 2/10 abaixo da máxima
-      double gatilho_venda  = minima_anterior_interna + dois_decimos; // 2/10 acima da mínima
+      double gatilho_compra = maxima_anterior_interna - dois_decimos;
+      double gatilho_venda  = minima_anterior_interna + dois_decimos;
       
       double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
       double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
       
-      // Compra 2/10 abaixo da máxima anterior
       if(ask >= gatilho_compra)
         {
          Print("[COMPRA 2/10] Ordem ", (total_ordens_ativas + 1), "/", InpMaxOrdens, " | Lote: ", InpLotSize);
          if(trade.Buy(InpLotSize, _Symbol, ask, 0, 0, "Sniper 2/10 Buy"))
             barra_viva_interna = hora_vela_atual;
         }
-      // Venda 2/10 acima da mínima anterior
       else if(bid <= gatilho_venda)
         {
          Print("[VENDA 2/10] Ordem ", (total_ordens_ativas + 1), "/", InpMaxOrdens, " | Lote: ", InpLotSize);
@@ -155,11 +156,12 @@ void OnTick()
             barra_viva_interna = hora_vela_atual;
         }
      }
+
+   Comment("🟢 [SNIPER VELAS INTERNAS V2010 - SINCRONIZADO H6]\n",
+           "Status Ciclo: ", (ciclo_encerrado_neste_bloco ? "⏳ AGUARDANDO PRÓXIMO CANDLE DE 6H (H6)" : "⚡ CICLO ATIVO NA PISTA"), "\n",
+           "Ordens Ativas: ", total_ordens_ativas, " / ", InpMaxOrdens, " | Flutuante: US$ ", DoubleToString(lucro_total_ciclo, 2));
   }
 
-//+------------------------------------------------------------------+
-//| Verifica se o dia da semana e horário estão liberados            |
-//+------------------------------------------------------------------+
 bool HorarioPermitido()
   {
    MqlDateTime tempo;
@@ -177,9 +179,6 @@ bool HorarioPermitido()
    return true;
   }
 
-//+------------------------------------------------------------------+
-//| Fecha todas as posições abertas pelo robô                        |
-//+------------------------------------------------------------------+
 void FecharTodasPosicoes()
   {
    for(int i=PositionsTotal()-1; i>=0; i--)
